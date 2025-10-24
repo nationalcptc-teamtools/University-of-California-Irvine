@@ -1,0 +1,217 @@
+<mxfile host="app.diagrams.net" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36" version="28.2.5">
+  <diagram name="Page-1" id="e3a06f82-3646-2815-327d-82caf3d4e204">
+    <mxGraphModel grid="1" page="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" pageScale="1.5" pageWidth="1169" pageHeight="826" background="none" math="0" shadow="0">
+      <root>
+        <mxCell id="0" style=";html=1;" />
+        <mxCell id="1" style=";html=1;" parent="0" />
+        <mxCell id="6a7d8f32e03d9370-57" value="&lt;font style=&quot;font-size: 18px;&quot;&gt;&lt;b style=&quot;&quot;&gt;Production Network (GUEST.CC.LOCAL)&lt;/b&gt;&lt;/font&gt;&lt;div&gt;&lt;span style=&quot;font-size: 18px;&quot;&gt;&lt;b&gt;10.0.200.0/24&lt;br&gt;&lt;/b&gt;&lt;/span&gt;&lt;div&gt;&lt;font style=&quot;font-size: 24px;&quot;&gt;&lt;b&gt;&lt;br&gt;&lt;/b&gt;&lt;/font&gt;&lt;/div&gt;&lt;/div&gt;" style="whiteSpace=wrap;html=1;fillColor=#FFD470;gradientColor=none;fontSize=14;strokeColor=none;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="100" y="80" width="750" height="1030" as="geometry" />
+        </mxCell>
+        <mxCell id="6a7d8f32e03d9370-60" value="&lt;font style=&quot;font-size: 18px;&quot;&gt;&lt;b&gt;Boat Network&lt;/b&gt;&lt;/font&gt;&lt;div&gt;&lt;b style=&quot;font-size: 18px; background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;10.0.254.0/24&lt;/b&gt;&lt;/div&gt;" style="whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontSize=14;strokeColor=none;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="860" y="680" width="602" height="374" as="geometry" />
+        </mxCell>
+        <mxCell id="6a7d8f32e03d9370-4" value="&lt;b&gt;Client&lt;/b&gt;" style="verticalLabelPosition=bottom;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;shape=mxgraph.citrix.desktop;fillColor=#66B2FF;gradientColor=#0066CC;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="280.49999999999994" y="170.00000000000006" width="89" height="98" as="geometry" />
+        </mxCell>
+        <mxCell id="6a7d8f32e03d9370-62" value="All Ports Tours Network Architecture" style="text;strokeColor=none;fillColor=none;html=1;fontSize=24;fontStyle=1;verticalAlign=middle;align=center;" vertex="1" parent="1">
+          <mxGeometry x="499" y="30" width="861" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-13" value="" style="group" connectable="0" vertex="1" parent="1">
+          <mxGeometry x="1140" y="253.99999999999994" width="493" height="440.00000000000006" as="geometry" />
+        </mxCell>
+        <mxCell id="6a7d8f32e03d9370-61" value="&lt;font style=&quot;font-size: 18px;&quot;&gt;&lt;b style=&quot;&quot;&gt;Attacker Network&lt;/b&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 18px;&quot;&gt;&lt;b style=&quot;&quot;&gt;10.0.254.0/24&lt;/b&gt;&lt;/font&gt;&lt;/div&gt;" style="whiteSpace=wrap;html=1;fillColor=#f8cecc;fontSize=14;strokeColor=none;verticalAlign=top;align=left;" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-13">
+          <mxGeometry x="-250" y="-43.99999999999994" width="493" height="360" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-9" value="" style="group" connectable="0" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-13">
+          <mxGeometry x="-90" y="66.00000000000006" width="119" height="98" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-10" value="&lt;b&gt;Kali VDI&lt;/b&gt;&lt;div&gt;&lt;b&gt;Infrastructure&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;10.0.254.201-6&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;shape=mxgraph.citrix.desktop;fillColor=#66B2FF;gradientColor=#0066CC;fontSize=14;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-9">
+          <mxGeometry x="30" width="89" height="98" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-11" value="" style="shadow=0;dashed=0;html=1;strokeColor=none;fillColor=#EF8F21;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top;align=center;outlineConnect=0;shape=mxgraph.veeam.linux;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-9">
+          <mxGeometry y="56" width="40" height="37" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-11" value="" style="group" connectable="0" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-13">
+          <mxGeometry x="-230" y="66" width="109" height="98" as="geometry" />
+        </mxCell>
+        <mxCell id="6a7d8f32e03d9370-3" value="&lt;b&gt;Windows VDI&lt;/b&gt;&lt;div&gt;&lt;b&gt;Infrastructure&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;10.0.254.101-6&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;shape=mxgraph.citrix.desktop;fillColor=#66B2FF;gradientColor=#0066CC;fontSize=14;" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-11">
+          <mxGeometry x="20" width="89" height="98" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-3" value="" style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;imageAspect=0;aspect=fixed;image=https://icons.diagrams.net/icon-cache1/Social_Network-2542/12-1486.svg" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-11">
+          <mxGeometry y="53.00000000000006" width="40" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-10" value="" style="group" connectable="0" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-13">
+          <mxGeometry x="50" y="66.00000000000006" width="119" height="98" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-3" value="&lt;b&gt;Greenbone Scanner&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;shape=mxgraph.citrix.desktop;fillColor=#66B2FF;gradientColor=#0066CC;fontSize=14;" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-10">
+          <mxGeometry x="30" width="89" height="98" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-5" value="" style="shadow=0;dashed=0;html=1;strokeColor=none;fillColor=#EF8F21;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top;align=center;outlineConnect=0;shape=mxgraph.veeam.linux;" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-10">
+          <mxGeometry y="56" width="40" height="37" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-12" value="&lt;b&gt;Router&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.1&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;shape=mxgraph.citrix.router;fillColor=#66B2FF;gradientColor=#0066CC;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="569" y="160" width="75.34" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-13" value="" style="shadow=0;dashed=0;html=1;strokeColor=none;fillColor=#EF8F21;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top;align=center;outlineConnect=0;shape=mxgraph.veeam.linux;" vertex="1" parent="1">
+          <mxGeometry x="120" y="890" width="44.8" height="44.8" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-14" value="" style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;imageAspect=0;aspect=fixed;image=https://icons.diagrams.net/icon-cache1/Social_Network-2542/12-1486.svg" vertex="1" parent="1">
+          <mxGeometry x="117.4" y="800" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-18" value="" style="group" connectable="0" vertex="1" parent="1">
+          <mxGeometry x="140" y="340" width="105" height="129.5" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-16" value="" style="group" connectable="0" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-18">
+          <mxGeometry x="20" width="85" height="129.5" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-14" value="" style="verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=left;outlineConnect=0;shape=mxgraph.citrix.directory_server;" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-16">
+          <mxGeometry x="7.5" width="65" height="88.5" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-15" value="&lt;b&gt;APT-DC-01&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-16">
+          <mxGeometry x="-5" y="89.5" width="90" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-17" value="" style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;imageAspect=0;aspect=fixed;image=https://icons.diagrams.net/icon-cache1/Social_Network-2542/12-1486.svg" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-18">
+          <mxGeometry y="39.75" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-23" value="" style="group" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="270" y="580" width="110" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-19" value="" style="group" vertex="1" connectable="0" parent="Wuk4fUnJbDOxYMX-fXYP-23">
+          <mxGeometry width="110" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-20" value="&lt;b&gt;APT-DATABASE-02&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.database_server;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-19">
+          <mxGeometry x="30" width="80" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-22" value="" style="shadow=0;dashed=0;html=1;strokeColor=none;fillColor=#EF8F21;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top;align=center;outlineConnect=0;shape=mxgraph.veeam.linux;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-23">
+          <mxGeometry y="45.200000000000045" width="44.8" height="44.8" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-25" value="" style="group" connectable="0" vertex="1" parent="1">
+          <mxGeometry x="460" y="280" width="101" height="133.25" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-22" value="" style="group" connectable="0" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-25">
+          <mxGeometry width="95" height="88.5" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-23" value="" style="group" connectable="0" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-22">
+          <mxGeometry width="95" height="88.50000000000004" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-20" value="" style="verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.directory_server;" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-23">
+          <mxGeometry x="30" width="65" height="88.5" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-21" value="" style="shadow=0;dashed=0;html=1;strokeColor=none;fillColor=#EF8F21;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top;align=center;outlineConnect=0;shape=mxgraph.veeam.linux;" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-23">
+          <mxGeometry y="43.700000000000045" width="44.8" height="44.8" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-24" value="&lt;b&gt;APT-LDAP&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-25">
+          <mxGeometry x="21" y="93.25" width="80" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-27" value="&lt;font style=&quot;font-size: 18px;&quot;&gt;&lt;b&gt;Active Directory Systems&lt;/b&gt;&lt;/font&gt;" style="whiteSpace=wrap;html=1;fillColor=#dae8fc;fontSize=14;strokeColor=#6c8ebf;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="260" y="770" width="350" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-36" value="" style="group" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="140" y="490" width="109" height="94" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-16" value="&lt;b&gt;APT-DATABASE-01&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.database_server;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-36">
+          <mxGeometry x="29" width="80" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-17" value="" style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;imageAspect=0;aspect=fixed;image=https://icons.diagrams.net/icon-cache1/Social_Network-2542/12-1486.svg" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-36">
+          <mxGeometry y="44" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-28" value="" style="group" connectable="0" vertex="1" parent="1">
+          <mxGeometry x="290" y="340" width="106" height="90.69999999999993" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-28" value="&lt;b&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;APT-PAYMENT-SYSTEM-02&lt;/font&gt;&lt;/b&gt;&lt;div&gt;&lt;b&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;10.0.0.0&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;shape=mxgraph.citrix.xenapp_server;fillColor=#66B2FF;gradientColor=#0066CC;fontSize=14;" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-28">
+          <mxGeometry x="30" width="76" height="89" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-30" value="" style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;imageAspect=0;aspect=fixed;image=https://icons.diagrams.net/icon-cache1/Social_Network-2542/12-1486.svg" vertex="1" parent="lphWwlKbXRhtgDc_rQT8-28">
+          <mxGeometry y="40.69999999999993" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-29" value="&lt;font style=&quot;font-size: 18px;&quot;&gt;&lt;b&gt;Cruise Operational Systems&lt;/b&gt;&lt;/font&gt;" style="whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontSize=14;strokeColor=#82b366;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="260" y="880" width="350" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="lphWwlKbXRhtgDc_rQT8-30" value="&lt;font style=&quot;font-size: 18px;&quot;&gt;&lt;b&gt;Payment Systems&lt;/b&gt;&lt;/font&gt;" style="whiteSpace=wrap;html=1;fillColor=#e1d5e7;fontSize=14;strokeColor=#9673a6;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="260" y="990" width="350" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-41" value="" style="group" connectable="0" vertex="1" parent="1">
+          <mxGeometry x="1230" y="710" width="109" height="98" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-42" value="&lt;b&gt;Windows-Desktop&lt;/b&gt;&lt;br&gt;&lt;div&gt;10.0.0.0&lt;/div&gt;" style="verticalLabelPosition=bottom;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;shape=mxgraph.citrix.desktop;fillColor=#66B2FF;gradientColor=#0066CC;fontSize=14;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-41">
+          <mxGeometry x="20" width="89" height="98" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-43" value="" style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;imageAspect=0;aspect=fixed;image=https://icons.diagrams.net/icon-cache1/Social_Network-2542/12-1486.svg" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-41">
+          <mxGeometry y="53.00000000000006" width="40" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-37" value="" style="group" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="1130" y="910" width="106" height="96.8" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-15" value="&lt;b&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;APT-PAYMENT-SYSTEM-01&lt;/font&gt;&lt;/b&gt;&lt;div&gt;&lt;b&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;10.0.0.0&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;shape=mxgraph.citrix.xenapp_server;fillColor=#66B2FF;gradientColor=#0066CC;fontSize=14;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-37">
+          <mxGeometry x="30" width="76" height="89" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-24" value="" style="shadow=0;dashed=0;html=1;strokeColor=none;fillColor=#EF8F21;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top;align=center;outlineConnect=0;shape=mxgraph.veeam.linux;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-37">
+          <mxGeometry y="52" width="44.8" height="44.8" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-44" value="" style="group" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="1280" y="910" width="85" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-32" value="&lt;b&gt;Windows Server&lt;/b&gt;&lt;br&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.kiosk;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-44">
+          <mxGeometry x="20" width="65" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-38" value="" style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;imageAspect=0;aspect=fixed;image=https://icons.diagrams.net/icon-cache1/Social_Network-2542/12-1486.svg" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-44">
+          <mxGeometry y="55" width="40" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-46" value="" style="group" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="690" y="280" width="109.5" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-40" value="&lt;b&gt;APT-WEB-SERVER-01&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.web_server;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-46">
+          <mxGeometry x="33" width="76.5" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-45" value="" style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;imageAspect=0;aspect=fixed;image=https://icons.diagrams.net/icon-cache1/Social_Network-2542/12-1486.svg" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-46">
+          <mxGeometry y="50" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-49" value="" style="group" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="710" y="420" width="107.5" height="94.79999999999995" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-47" value="&lt;b&gt;APT-WEB-SERVER-02&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.web_server;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-49">
+          <mxGeometry x="31" width="76.5" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-48" value="" style="shadow=0;dashed=0;html=1;strokeColor=none;fillColor=#EF8F21;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top;align=center;outlineConnect=0;shape=mxgraph.veeam.linux;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-49">
+          <mxGeometry y="50" width="44.8" height="44.8" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-56" value="" style="group" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="970" y="776.5" width="101" height="97.00000000000006" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-50" value="&lt;b&gt;APT-SMB&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.file_server;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-56">
+          <mxGeometry x="30" width="71" height="97" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-53" value="" style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;imageAspect=0;aspect=fixed;image=https://icons.diagrams.net/icon-cache1/Social_Network-2542/12-1486.svg" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-56">
+          <mxGeometry y="47.00000000000006" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-59" value="" style="group" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="960" y="930" width="101" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-52" value="&lt;b&gt;APT-FTP&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.file_server;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-59">
+          <mxGeometry x="30" width="71" height="97" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-58" value="" style="shadow=0;dashed=0;html=1;strokeColor=none;fillColor=#EF8F21;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top;align=center;outlineConnect=0;shape=mxgraph.veeam.linux;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-59">
+          <mxGeometry y="59.200000000000045" width="44.8" height="44.8" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-63" value="" style="group" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="460" y="440" width="102" height="100.5" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-51" value="&lt;b&gt;APT-Users&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.cache_server;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-63">
+          <mxGeometry x="31" width="71" height="97.5" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-61" value="" style="shape=image;html=1;verticalAlign=top;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;imageAspect=0;aspect=fixed;image=https://icons.diagrams.net/icon-cache1/Social_Network-2542/12-1486.svg" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-63">
+          <mxGeometry y="50.5" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-65" value="" style="group" connectable="0" vertex="1" parent="1">
+          <mxGeometry x="730" y="590" width="99" height="97.5" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-60" value="&lt;b&gt;APT-Users&lt;/b&gt;&lt;div&gt;&lt;b&gt;10.0.0.0&lt;/b&gt;&lt;/div&gt;" style="verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.cache_server;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-65">
+          <mxGeometry x="28" width="71" height="97.5" as="geometry" />
+        </mxCell>
+        <mxCell id="Wuk4fUnJbDOxYMX-fXYP-64" value="" style="shadow=0;dashed=0;html=1;strokeColor=none;fillColor=#EF8F21;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top;align=center;outlineConnect=0;shape=mxgraph.veeam.linux;" vertex="1" parent="Wuk4fUnJbDOxYMX-fXYP-65">
+          <mxGeometry y="47.5" width="44.8" height="44.8" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
