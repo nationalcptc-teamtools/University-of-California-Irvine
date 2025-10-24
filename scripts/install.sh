@@ -17,6 +17,8 @@ sudo apt install john -y
 sudo apt install hashcat -y
 sudo apt install enum4linux-ng -y
 sudo apt install proxychains4 -y
+sudo apt install python3 -y 
+sudo apt install python3-pip -y 
 sudo apt install pipx -y
 pipx ensurepath
 sudo pipx ensurepath --global 
@@ -30,8 +32,6 @@ sudo apt install vim -y
 sudo apt install nano -y 
 sudo apt install tmux -y 
 sudo apt install flameshot -y
-sudo apt install python3 -y 
-sudo apt install python3-pip -y 
 sudo apt install python3-venv -y 
 sudo apt install wordlists -y
 sudo apt install seclists -y
