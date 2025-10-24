@@ -14,7 +14,6 @@ sudo apt install hashid -y
 sudo apt install hash-identifier -y
 sudo apt install bloodhound.py -y
 sudo apt install john -y
-sudo apt install hashcat -y
 sudo apt install enum4linux-ng -y
 sudo apt install proxychains4 -y
 sudo apt install python3 -y 
