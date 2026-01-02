@@ -1,6 +1,4 @@
 #!/bin/bash
-mkdir wordlists
-cd wordlists
 wget https://weakpass.com/download/90/rockyou.txt.gz
 wget https://raw.githubusercontent.com/danielmiessler/SecLists/refs/heads/master/Discovery/Web-Content/combined_directories.txt
 wget https://raw.githubusercontent.com/danielmiessler/SecLists/refs/heads/master/Passwords/Common-Credentials/2023-200_most_used_passwords.txt
