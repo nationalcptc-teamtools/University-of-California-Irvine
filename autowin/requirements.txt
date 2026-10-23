@@ -1,0 +1,9 @@
+# autowin-new drives external binaries (nxc, certipy, hashcat, impacket scripts)
+# and uses only the Python standard library, so there are no pip dependencies.
+#
+# Required/optional external tools (install separately):
+#   NetExec   -> https://github.com/Pennyw0rth/NetExec   (required)
+#   Certipy   -> https://github.com/ly4k/Certipy         (ADCS)
+#   Impacket  -> https://github.com/fortra/impacket       (delegation / RBCD)
+#   hashcat   -> https://hashcat.net                       (cracking; --no-crack to skip)
+#   pyGPOAbuse-> https://github.com/Hackndo/pyGPOAbuse     (gpo subcommand only)

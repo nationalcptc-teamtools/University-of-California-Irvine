@@ -1,0 +1,20 @@
+.venv/
+__pycache__/
+*.pyc
+# loot / artifacts
+*.pfx
+*.ccache
+*.hash
+*.out
+autowin-users-*
+*_Certipy.txt
+*_Certipy.json
+# loot store & run logs
+loot/
+loot_*/
+*.log
+# OS junk
+.DS_Store
+._*
+Thumbs.db
+desktop.ini

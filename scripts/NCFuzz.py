@@ -1,382 +1,568 @@
 #!/usr/bin/env python3
 """
-NCFuzz - Netcat Connection Fuzzer
-Fuzzes netcat connections with payloads from a wordlist
+NCFuzz - fuzz a line-oriented TCP (or UDP) service.
+
+For the menu-driven daemon on a weird port: connect, walk a couple of menu
+levels, then push a wordlist through one field and see which answer is not
+like the others.
+
+Two things it does that save you the usual grief. Payloads are newline
+terminated and backslash escapes are decoded, because a service reading lines
+never answers anything you do not terminate. And responses are grouped by
+shape rather than dumped, because with a 200k wordlist the finding is the rare
+signature, not the transcript - so that is what the summary puts first.
 """
 
 import argparse
+import hashlib
+import json
+import re
+import select
 import socket
 import sys
 import time
-from pathlib import Path
+
+VERSION = "2.0"
+
+FUZZ = b"{FUZZ}"
+PRINTABLE = range(32, 127)
 
 
-def parse_target(target_str):
-    """Parse ip:port string into host and port"""
-    try:
-        if ':' not in target_str:
-            raise ValueError("Target must be in format ip:port")
-        
-        host, port = target_str.rsplit(':', 1)
-        port = int(port)
-        
-        if port < 1 or port > 65535:
-            raise ValueError("Port must be between 1 and 65535")
-        
-        return host, port
-    except ValueError as e:
-        print(f"Error: Invalid target format - {e}")
-        sys.exit(1)
+# --------------------------------------------------------------------- helpers
+
+def die(msg, code=1):
+    print("[!] %s" % msg, file=sys.stderr)
+    sys.exit(code)
 
 
-def connect_to_target(host, port, timeout=5):
-    """Establish connection to target"""
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect((host, port))
-        return sock
-    except socket.error as e:
-        print(f"Error: Failed to connect to {host}:{port} - {e}")
-        sys.exit(1)
+def unescape(text):
+    """Decode \\n, \\r, \\t, \\xNN in a command-line argument into bytes.
 
-
-def send_data(sock, data):
-    """Send data to socket"""
-    try:
-        if data:
-            sock.sendall(data.encode('utf-8'))
-    except socket.error as e:
-        print(f"Warning: Failed to send data - {e}")
-
-
-def receive_output(sock, timeout=2):
-    """Receive output from socket with timeout"""
-    try:
-        sock.settimeout(timeout)
-        output = b''
-        while True:
-            try:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                output += chunk
-            except socket.timeout:
-                break
-        return output.decode('utf-8', errors='ignore')
-    except socket.error:
-        return ""
-
-
-def wait_and_print_response(sock, wait_after=0.3, must_wait=True):
-    """Wait for at least one response, then wait additional time and print all responses
-    
-    Args:
-        sock: Socket to receive from
-        wait_after: Additional time to wait after first response (seconds)
-        must_wait: If True, always wait the full period even if no initial response
+    A payload typed as '...\\r\\n' arrives here as a literal backslash, r,
+    backslash, n - the shell does not interpret those inside normal quotes.
+    Sending them raw is why the old version could never speak HTTP.
     """
-    all_responses = b''
-    got_initial_response = False
-    
-    # First, wait for at least one response with a timeout
-    initial_timeout = 2.0
-    sock.settimeout(initial_timeout)
-    
     try:
-        chunk = sock.recv(4096)
-        if chunk:
-            all_responses += chunk
-            got_initial_response = True
-    except socket.timeout:
-        pass
-    except socket.error:
-        pass
-    
-    # Wait additional time for more data
-    if got_initial_response or must_wait:
-        # Wait the additional period and collect all responses
-        end_time = time.time() + wait_after
-        sock.settimeout(0.1)  # Short timeout for checking
-        
-        while time.time() < end_time:
-            try:
-                chunk = sock.recv(4096)
-                if chunk:
-                    all_responses += chunk
-                else:
-                    break
-            except socket.timeout:
-                # Continue checking until end_time
-                continue
-            except socket.error:
-                break
-    
-    # Print the response if we got one
-    if all_responses:
-        response_text = all_responses.decode('utf-8', errors='ignore')
-        print(f"[RESPONSE] {response_text}", end='')
-    
-    return all_responses.decode('utf-8', errors='ignore')
+        return text.encode("utf-8").decode("unicode_escape").encode("latin-1")
+    except (UnicodeDecodeError, UnicodeEncodeError) as e:
+        die("cannot decode escapes in %r: %s (use --no-escape to send it verbatim)" % (text, e))
 
 
-def parse_quoted_values(data_string):
-    """Parse single-quoted values from a string like 'val1', 'val2', 'val3'"""
-    if not data_string:
-        return []
-    
-    values = []
-    i = 0
-    while i < len(data_string):
-        # Skip whitespace and commas
-        while i < len(data_string) and (data_string[i].isspace() or data_string[i] == ','):
-            i += 1
-        
-        if i >= len(data_string):
-            break
-        
-        # Look for opening single quote
-        if data_string[i] == "'":
-            i += 1  # Skip opening quote
-            value = ""
-            # Read until closing quote
-            while i < len(data_string) and data_string[i] != "'":
-                # Handle escaped quotes
-                if data_string[i] == '\\' and i + 1 < len(data_string) and data_string[i + 1] == "'":
-                    value += "'"
-                    i += 2
-                else:
-                    value += data_string[i]
-                    i += 1
-            
-            if i < len(data_string) and data_string[i] == "'":
-                values.append(value)
-                i += 1  # Skip closing quote
+def to_bytes(text, decode_escapes=True):
+    return unescape(text) if decode_escapes else text.encode("utf-8", "surrogateescape")
+
+
+def show(data, width=0):
+    """One-line printable rendering of bytes, for the attempt column."""
+    out = []
+    for b in data:
+        if b in PRINTABLE:
+            out.append(chr(b))
+        elif b == 0x0A:
+            out.append("\\n")
+        elif b == 0x0D:
+            out.append("\\r")
+        elif b == 0x09:
+            out.append("\\t")
         else:
-            # If no quote, treat as single value (backward compatibility)
-            # Find the next comma or end
-            end = i
-            while end < len(data_string) and data_string[end] != ',':
-                end += 1
-            value = data_string[i:end].strip()
-            if value:
-                values.append(value)
-            i = end
-    
-    return values
+            out.append("\\x%02x" % b)
+    s = "".join(out)
+    if width and len(s) > width:
+        s = s[:width - 3] + "..."
+    return s
 
 
-def send_sequential_inputs(sock, inputs, delay=0.2):
-    """Send multiple inputs sequentially, waiting for and receiving responses after each"""
-    if not inputs:
-        return
-    
-    for i, input_data in enumerate(inputs):
-        send_data(sock, input_data)
-        # Wait for at least one response, then wait additional time and print all responses
-        wait_and_print_response(sock, wait_after=0.3)
-
-
-def fuzz_connection(host, port, wordlist_path, payload_template, initial_data=None, 
-                   repeat_data=None, reconnect=False):
-    """Main fuzzing function"""
-    
-    # Validate wordlist file
-    if not Path(wordlist_path).exists():
-        print(f"Error: Wordlist file not found: {wordlist_path}")
-        sys.exit(1)
-    
-    # Validate payload template
-    if '{FUZZ}' not in payload_template:
-        print("Error: Payload template must contain {FUZZ} placeholder")
-        sys.exit(1)
-    
-    # Read wordlist
-    try:
-        with open(wordlist_path, 'r', encoding='utf-8', errors='ignore') as f:
-            wordlist = [line.strip() for line in f if line.strip()]
-    except IOError as e:
-        print(f"Error: Cannot read wordlist file - {e}")
-        sys.exit(1)
-    
-    if not wordlist:
-        print("Error: Wordlist is empty")
-        sys.exit(1)
-    
-    # Parse initial data - support single-quoted sequential inputs
-    initial_inputs = []
-    if initial_data:
-        initial_inputs = parse_quoted_values(initial_data)
-    
-    # Parse repeat data - support single-quoted sequential inputs
-    repeat_inputs = []
-    if repeat_data:
-        repeat_inputs = parse_quoted_values(repeat_data)
-    
-    print(f"[*] Starting fuzzing against {host}:{port}")
-    print(f"[*] Wordlist: {wordlist_path} ({len(wordlist)} entries)")
-    print(f"[*] Payload template: {payload_template}")
-    print(f"[*] Connection mode: {'Reconnect per attempt' if reconnect else 'Persistent connection'}")
-    if initial_inputs:
-        print(f"[*] Initial inputs: {len(initial_inputs)} sequential input(s)")
-    if repeat_inputs and not reconnect:
-        print(f"[*] Repeat inputs: {len(repeat_inputs)} sequential input(s)")
-    # print(file=sys.stderr)
-    
-    if reconnect:
-        # Mode 1: Reconnect for each attempt
-        for i, fuzz_value in enumerate(wordlist, 1):
-            # Create payload by replacing {FUZZ}
-            payload = payload_template.replace('{FUZZ}', fuzz_value)
-            
-            try:
-                # Connect to target
-                sock = connect_to_target(host, port)
-                
-                # Send initial data sequentially if specified
-                if initial_inputs:
-                    send_sequential_inputs(sock, initial_inputs)
-                    # Response already received by send_sequential_inputs
-                
-                # Send payload
-                print(f"[PAYLOAD] {payload}")
-                send_data(sock, payload)
-                
-                # Wait for and print response, then capture as output
-                output = wait_and_print_response(sock, wait_after=0.3)
-                
-                # Print output to stdout
-                print(output)
-                sys.stdout.flush()
-                
-                # Close connection
-                sock.close()
-                
-                # Small delay before next attempt
-                if i < len(wordlist):
-                    time.sleep(0.1)
-                
-            except KeyboardInterrupt:
-                print("\n[*] Fuzzing interrupted by user")
-                break
-            except Exception as e:
-                error_msg = f"Error processing payload '{payload}': {e}"
-                print(f"ERROR: {error_msg}")
-                continue
+def parse_target(spec):
+    """host:port, or [::1]:port for a literal IPv6 address."""
+    if spec.startswith("["):
+        host, _, rest = spec[1:].partition("]")
+        if not rest.startswith(":"):
+            die("bad target %r - use [%s]:port for IPv6" % (spec, host or "::1"))
+        port = rest[1:]
+    elif spec.count(":") == 1:
+        host, _, port = spec.partition(":")
     else:
-        # Mode 2: Persistent connection
-        sock = None
+        die("bad target %r - use host:port (or [::1]:port for IPv6)" % spec)
+    if not host:
+        die("bad target %r - no host" % spec)
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        die("bad target %r - port must be 1-65535" % spec)
+    return host, int(port)
+
+
+def parse_sequence(values, decode_escapes):
+    """Build the list of lines for -s / -r.
+
+    -s is repeatable, which is the clear way to write it. A single argument in
+    the old quoted-list form, -s "'2', '2'", is still understood so existing
+    notes keep working.
+    """
+    out = []
+    for v in values:
+        stripped = v.strip()
+        if len(values) == 1 and stripped.startswith("'") and stripped.endswith("'") and "'," in stripped.replace(" ", ""):
+            out.extend(to_bytes(p, decode_escapes)
+                       for p in re.findall(r"'((?:[^'\\]|\\.)*)'", stripped))
+        else:
+            out.append(to_bytes(v, decode_escapes))
+    return out
+
+
+def parse_lengths(spec):
+    """'100-3000:100' -> 100, 200, ... 3000.  '1-50' -> 1..50."""
+    m = re.fullmatch(r"(\d+)-(\d+)(?::(\d+))?", spec.strip())
+    if not m:
+        die("bad --lengths %r - use START-END[:STEP], e.g. 100-3000:100" % spec)
+    lo, hi = int(m.group(1)), int(m.group(2))
+    step = int(m.group(3) or 1)
+    if lo > hi or step < 1:
+        die("bad --lengths %r - need START <= END and STEP >= 1" % spec)
+    return range(lo, hi + 1, step)
+
+
+def load_payloads(args):
+    """Yield (payload_bytes, label) pairs from a wordlist, stdin or --lengths."""
+    if args.lengths:
+        pattern = to_bytes(args.pattern, not args.no_escape) or b"A"
+        for n in parse_lengths(args.lengths):
+            blob = (pattern * (n // len(pattern) + 1))[:n]
+            yield blob, "%s*%d" % (show(pattern, 8), n)
+        return
+
+    if args.wordlist == "-":
+        raw = sys.stdin.buffer.read()
+    else:
         try:
-            # Connect once at the start
-            sock = connect_to_target(host, port)
-            
-            # Send initial setup once
-            if initial_inputs:
-                send_sequential_inputs(sock, initial_inputs)
-                # Response already received by send_sequential_inputs
-            
-            # Process each payload
-            for i, fuzz_value in enumerate(wordlist, 1):
-                # Create payload by replacing {FUZZ}
-                payload = payload_template.replace('{FUZZ}', fuzz_value)
-                
-                try:
-                    # Send repeat values before payload (except for first payload)
-                    if repeat_inputs and i > 1:
-                        send_sequential_inputs(sock, repeat_inputs)
-                        # Ensure final response from repeat inputs is fully received
-                        # Additional wait to ensure server has fully processed and is ready
-                        wait_and_print_response(sock, wait_after=0.3, must_wait=True)
-                    
-                    # Send payload
-                    print(f"[PAYLOAD] {payload}")
-                    send_data(sock, payload)
-                    
-                    # Wait for and print response, then capture as output
-                    output = wait_and_print_response(sock, wait_after=0.3)
-                    
-                    # Print output to stdout
-                    # print(output)
-                    sys.stdout.flush()
-                    
-                    # Small delay before next attempt
-                    if i < len(wordlist):
-                        time.sleep(0.1)
-                    
-                except KeyboardInterrupt:
-                    print("\n[*] Fuzzing interrupted by user")
-                    break
-                except Exception as e:
-                    error_msg = f"Error processing payload '{payload}': {e}"
-                    print(f"ERROR: {error_msg}")
-                    # Try to continue with next payload
+            with open(args.wordlist, "rb") as fh:
+                raw = fh.read()
+        except OSError as e:
+            die("cannot read wordlist: %s" % e)
+
+    seen_any = False
+    for line in raw.split(b"\n"):
+        line = line.rstrip(b"\r")
+        if not line:
+            continue
+        seen_any = True
+        yield line, show(line)
+    if not seen_any:
+        die("wordlist %s has no entries" % args.wordlist)
+
+
+# ------------------------------------------------------------------ connection
+
+class Target:
+    """One socket to the service, with the reads and writes we need."""
+
+    def __init__(self, host, port, udp=False, connect_timeout=5.0):
+        self.host, self.port, self.udp = host, port, udp
+        self.connect_timeout = connect_timeout
+        self.sock = None
+
+    def connect(self):
+        kind = socket.SOCK_DGRAM if self.udp else socket.SOCK_STREAM
+        try:
+            infos = socket.getaddrinfo(self.host, self.port, 0, kind)
+        except OSError as e:
+            raise OSError("cannot resolve %s: %s" % (self.host, e))
+        last = None
+        for af, st, proto, _canon, sa in infos:
+            s = socket.socket(af, st, proto)
+            try:
+                s.settimeout(self.connect_timeout)
+                s.connect(sa)
+                s.setblocking(False)
+                self.sock = s
+                return
+            except OSError as e:
+                last = e
+                s.close()
+        raise last
+
+    def send(self, data):
+        """True if it went out; False means the connection is gone."""
+        if self.sock is None:
+            return False
+        try:
+            self.sock.setblocking(True)
+            self.sock.sendall(data)
+            self.sock.setblocking(False)
+            return True
+        except OSError:
+            self.close()
+            return False
+
+    def read(self, first_wait, settle, cap, until=None):
+        """Collect a response.
+
+        Wait up to first_wait for the first byte; once something arrives, keep
+        reading until settle seconds of silence, until `until` matches, or
+        until cap seconds have passed overall. Returns (data, closed).
+        """
+        if self.sock is None:
+            return b"", True
+        buf = b""
+        start = time.monotonic()
+        last = start
+        while True:
+            now = time.monotonic()
+            if now - start >= cap:
+                break
+            if buf:
+                budget = settle - (now - last)
+            else:
+                budget = first_wait - (now - start)
+            if budget <= 0:
+                break
+            try:
+                ready, _, _ = select.select([self.sock], [], [], min(budget, cap - (now - start)))
+            except OSError:
+                return buf, True
+            if not ready:
+                continue
+            try:
+                chunk = self.sock.recv(65536)
+            except BlockingIOError:
+                continue
+            except OSError:
+                self.close()
+                return buf, True
+            if not chunk:
+                self.close()
+                return buf, True
+            buf += chunk
+            last = time.monotonic()
+            if until is not None and until.search(buf):
+                break
+        return buf, False
+
+    def close(self):
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+
+
+# -------------------------------------------------------------------- triage
+
+class Triage:
+    """Groups responses by shape so the odd one out is easy to see.
+
+    The payload is removed from the response before hashing: a service that
+    echoes what you sent would otherwise make every single reply unique, and
+    nothing would ever group.
+    """
+
+    def __init__(self):
+        self.groups = {}
+        self.order = []
+
+    def signature(self, payload, response, closed):
+        norm = response
+        if len(payload) >= 2:
+            norm = norm.replace(payload, b"")
+        digest = hashlib.sha1(norm).hexdigest()[:8]
+        return ("eof" if closed else "ok", len(norm), digest)
+
+    def add(self, sig, label, response):
+        g = self.groups.get(sig)
+        if g is None:
+            g = {"count": 0, "examples": [], "preview": show(response[:400], 64)}
+            self.groups[sig] = g
+            self.order.append(sig)
+            first = True
+        else:
+            first = False
+        g["count"] += 1
+        if len(g["examples"]) < 3:
+            g["examples"].append(label)
+        return first
+
+    def report(self, out=sys.stdout):
+        if not self.groups:
+            return
+        ranked = sorted(self.order, key=lambda s: (self.groups[s]["count"], self.order.index(s)))
+        total = sum(g["count"] for g in self.groups.values())
+        print("\n%d response%s, %d distinct shape%s - rarest first:"
+              % (total, "" if total == 1 else "s",
+                 len(ranked), "" if len(ranked) == 1 else "s"), file=out)
+        print("  %5s  %6s  %-12s  %-24s  %s"
+              % ("count", "len", "sig", "example payload", "response"), file=out)
+        for sig in ranked:
+            g = self.groups[sig]
+            state, length, digest = sig
+            print("  %5d  %6d  %-12s  %-24s  %s"
+                  % (g["count"], length, digest + ("/eof" if state == "eof" else ""),
+                     (g["examples"][0] or "")[:24], g["preview"][:64]), file=out)
+        if len(ranked) > 1 and self.groups[ranked[0]]["count"] == 1:
+            print("\n[*] one-off response from: %s" % ", ".join(self.groups[ranked[0]]["examples"]),
+                  file=out)
+
+
+# ---------------------------------------------------------------------- fuzzing
+
+def run(args):
+    host, port = parse_target(args.target)
+    esc = not args.no_escape
+
+    template = to_bytes(args.payload, esc)
+    if FUZZ not in template:
+        die("-p/--payload must contain {FUZZ} - that is where each entry goes")
+
+    eol = b"" if args.no_newline else (b"\r\n" if args.crlf else b"\n")
+    prologue = parse_sequence(args.initial or [], esc)
+    separator = parse_sequence(args.repeat or [], esc)
+    until = re.compile(to_bytes(args.until, esc)) if args.until else None
+
+    if separator and args.reconnect:
+        die("-r/--repeat makes no sense with --reconnect: every attempt gets a fresh connection")
+
+    payloads = list(load_payloads(args))
+    target = Target(host, port, args.udp, args.connect_timeout)
+    triage = Triage()
+    journal = None
+    if args.output:
+        try:
+            journal = open(args.output, "w", encoding="utf-8")
+        except OSError as e:
+            die("cannot write %s: %s" % (args.output, e))
+
+    read_args = dict(first_wait=args.timeout, settle=args.settle, cap=args.max_read, until=until)
+    quick = dict(first_wait=args.settle, settle=args.settle, cap=args.max_read, until=until)
+
+    def open_connection():
+        """Connect, swallow the banner, replay the prologue. None on failure."""
+        for attempt in range(args.retries + 1):
+            try:
+                target.connect()
+                break
+            except OSError as e:
+                if attempt == args.retries:
+                    return "cannot connect: %s" % e
+                time.sleep(0.5 * (attempt + 1))
+        banner, _closed = target.read(**quick)
+        if banner and args.verbose:
+            print("[banner] %s" % show(banner, 200))
+        for line in prologue:
+            if not target.send(line + eol):
+                return "connection dropped while sending the prologue"
+            target.read(**quick)
+        return None
+
+    wide = max(len(str(len(payloads))), 2)
+    print("[*] %s:%d %s | %d payload%s | %s"
+          % (host, port, "udp" if args.udp else "tcp", len(payloads),
+             "" if len(payloads) == 1 else "s",
+             "reconnect each attempt" if args.reconnect else "one persistent connection"))
+    if prologue:
+        print("[*] prologue: %s" % " -> ".join(show(p, 20) for p in prologue))
+    if until:
+        print("[*] reading until /%s/ matches" % args.until)
+    print()
+
+    sent = 0
+    down_after = None
+    interrupted = False
+
+    try:
+        for index, (value, label) in enumerate(payloads, 1):
+            payload = template.replace(FUZZ, value)
+
+            if target.sock is None:
+                problem = open_connection()
+                if problem:
+                    down_after = (index, label, problem)
+                    if not args.keep_going:
+                        break
+                    print("%s  %-28s  %s" % (str(index).rjust(wide) + "/" + str(len(payloads)),
+                                             label[:28], "DOWN - " + problem))
                     continue
-            
-            # Close connection at the end
-            if sock:
-                sock.close()
-                
-        except KeyboardInterrupt:
-            print("\n[*] Fuzzing interrupted by user")
-            if sock:
-                sock.close()
-        except Exception as e:
-            print(f"Error: Connection failed - {e}")
-            if sock:
-                sock.close()
-            sys.exit(1)
-    
-    print(f"\n[*] Fuzzing complete")
+
+            if separator and sent:
+                for line in separator:
+                    target.send(line + eol)
+                target.read(**quick)
+
+            began = time.monotonic()
+            if not target.send(payload + eol):
+                down_after = (index, label, "connection closed on send")
+                if not args.keep_going:
+                    break
+                continue
+            response, closed = target.read(**read_args)
+            elapsed = time.monotonic() - began
+            sent += 1
+
+            if args.reconnect:
+                target.close()
+
+            sig = triage.signature(payload, response, closed)
+            novel = triage.add(sig, label, response)
+
+            if journal:
+                journal.write(json.dumps({
+                    "n": index,
+                    "payload": label,
+                    "sent": payload.decode("latin-1"),
+                    "response": response.decode("latin-1"),
+                    "bytes": len(response),
+                    "ms": round(elapsed * 1000, 1),
+                    "closed": closed,
+                    "sig": sig[2],
+                    "new": novel,
+                }) + "\n")
+
+            text = response.decode("latin-1")
+            if args.match and not re.search(args.match, text):
+                continue
+            if args.hide and re.search(args.hide, text):
+                continue
+            if args.only_new and not novel:
+                continue
+
+            flags = []
+            if novel and index > 1:
+                flags.append("NEW")
+            if closed:
+                flags.append("EOF")
+            if not response:
+                flags.append("silent")
+
+            print("%s/%d  %-28s  %5dB  %6.0fms  %s"
+                  % (str(index).rjust(wide), len(payloads), label[:28],
+                     len(response), elapsed * 1000, " ".join(flags)))
+
+            if args.verbose or (novel and not args.quiet):
+                for line in response.split(b"\n"):
+                    if line.strip():
+                        print("      | %s" % show(line, 0 if args.verbose else 100))
+
+            if args.delay:
+                time.sleep(args.delay)
+
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\n[*] interrupted after %d of %d" % (sent, len(payloads)))
+    finally:
+        target.close()
+        if journal:
+            journal.close()
+
+    triage.report()
+    if journal:
+        print("[*] full transcript: %s" % args.output)
+
+    if down_after and not args.keep_going:
+        index, label, problem = down_after
+        print("\n[!] service stopped answering at payload %d of %d (%s): %s"
+              % (index, len(payloads), label, problem))
+        print("[!] that payload is the finding - confirm it on its own with:")
+        print("      printf '%%s\\n' %s | %s %s -w - --reconnect"
+              % (repr(label), sys.argv[0], args.target))
+        print("[!] use --keep-going to push through the rest of the wordlist instead.")
+        return 3
+    return 2 if interrupted else 0
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='NCFuzz - Netcat Connection Fuzzer',
+        prog="NCFuzz.py",
+        description="Fuzz one field of a line-oriented TCP/UDP service.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
-Examples:
-  %(prog)s 192.168.1.100:8080 -w wordlist.txt -p "GET /{FUZZ} HTTP/1.1\\r\\nHost: example.com\\r\\n\\r\\n"
-  %(prog)s 10.0.0.1:9999 -w payloads.txt -p "FUZZ"
-  %(prog)s localhost:4444 -w fuzz.txt -p "test{FUZZ}end" -s "'INIT'" -r "'SEPARATOR'"
-  %(prog)s 192.168.1.100:9999 -w wordlist.txt -p "{FUZZ}" -s "'2', '2'"
-  %(prog)s 192.168.1.100:9999 -w wordlist.txt -p "{FUZZ}" -s "'2', '2'" -r "'reset', 'menu'"
-  %(prog)s 192.168.1.100:9999 -w wordlist.txt -p "{FUZZ}" --reconnect -s "'2', '2'"
-        '''
-    )
-    
-    parser.add_argument('target', help='Target in format ip:port (required)')
-    parser.add_argument('-w', '--wordlist', required=True, help='Wordlist file (required)')
-    parser.add_argument('-p', '--payload', required=True, 
-                       help='Payload template with {FUZZ} placeholder (required)')
-    parser.add_argument('-s', '--initial', 
-                       help='Initial data to send before fuzzing. Use single-quoted values for sequential inputs (e.g., \'2\', \'2\' to send "2" twice with response waiting)')
-    parser.add_argument('-r', '--repeat', 
-                       help='Data to send between each fuzz attempt (persistent connection only). Use single-quoted values for sequential inputs (e.g., \'reset\', \'menu\' to send multiple commands). Cannot be used with --reconnect.')
-    parser.add_argument('--reconnect', action='store_true',
-                       help='Reconnect for each fuzz attempt (default: persistent connection). Cannot be used with --repeat.')
-    
+        epilog="""
+examples
+  the common case - one wordlist into a service that just reads a line
+    %(prog)s 10.10.10.5:9999 -w wordlists/big.txt
+
+  walk a menu first, then fuzz the field it lands on
+    %(prog)s 10.10.10.5:9999 -w ids.txt -s 2 -s 1
+
+  password prompt - stop reading the moment the prompt comes back, which is
+  what makes a big wordlist finish this year
+    %(prog)s 10.10.10.5:9999 -w rockyou.txt -s login -s admin --until 'password:'
+
+  speak HTTP by hand (escapes are decoded, so this one actually works)
+    %(prog)s 10.10.10.5:80 -w dirs.txt --reconnect --no-newline \\
+      -p 'GET /{FUZZ} HTTP/1.1\\r\\nHost: target\\r\\nConnection: close\\r\\n\\r\\n'
+
+  look for an overflow: 100 to 3000 bytes of A, fresh connection each time
+    %(prog)s 10.10.10.5:9999 --lengths 100-3000:100 --reconnect
+
+  keep the evidence for the report
+    %(prog)s 10.10.10.5:9999 -w names.txt -o fuzz.jsonl
+
+reading the output
+  one line per attempt with the response size and how long it took, then a
+  summary that groups responses by shape and puts the rarest first. NEW marks
+  a shape not seen before and prints it; EOF means the service hung up.
+
+exit codes
+  0 finished   2 interrupted   3 the service stopped answering   1 bad usage
+""")
+
+    parser.add_argument("target", help="host:port (or [::1]:port)")
+
+    src = parser.add_argument_group("what to send")
+    src.add_argument("-w", "--wordlist", metavar="FILE",
+                     help="one payload per line; - reads stdin")
+    src.add_argument("--lengths", metavar="SPEC",
+                     help="generate payloads instead: START-END[:STEP], e.g. 100-3000:100")
+    src.add_argument("--pattern", default="A", metavar="BYTES",
+                     help="repeated to build --lengths payloads (default: A)")
+    src.add_argument("-p", "--payload", default="{FUZZ}", metavar="TMPL",
+                     help="template with {FUZZ} where the entry goes (default: {FUZZ})")
+    src.add_argument("-s", "--initial", action="append", metavar="LINE",
+                     help="line to send after connecting, before fuzzing; repeatable")
+    src.add_argument("-r", "--repeat", action="append", metavar="LINE",
+                     help="line to send between attempts on a persistent connection; repeatable")
+    src.add_argument("--no-newline", "-n", action="store_true",
+                     help="do not terminate what you send (default appends \\n)")
+    src.add_argument("--crlf", action="store_true", help="terminate with \\r\\n instead of \\n")
+    src.add_argument("--no-escape", action="store_true",
+                     help="send -p/-s/-r verbatim instead of decoding \\n, \\xNN and friends")
+
+    conn = parser.add_argument_group("connection")
+    conn.add_argument("--reconnect", action="store_true",
+                      help="fresh connection per attempt (default: one persistent connection)")
+    conn.add_argument("-u", "--udp", action="store_true", help="UDP instead of TCP")
+    conn.add_argument("--connect-timeout", type=float, default=5.0, metavar="SEC")
+    conn.add_argument("--retries", type=int, default=2, metavar="N",
+                      help="reconnect attempts before calling the service down (default: 2)")
+    conn.add_argument("--keep-going", action="store_true",
+                      help="carry on through the wordlist when the service stops answering")
+
+    timing = parser.add_argument_group("timing")
+    timing.add_argument("-T", "--timeout", type=float, default=2.0, metavar="SEC",
+                        help="wait for the first byte of a response (default: 2.0)")
+    timing.add_argument("--settle", type=float, default=0.3, metavar="SEC",
+                        help="silence that ends a response (default: 0.3)")
+    timing.add_argument("--max-read", type=float, default=15.0, metavar="SEC",
+                        help="hard cap on one response (default: 15)")
+    timing.add_argument("--until", metavar="RE",
+                        help="stop reading as soon as this matches - much faster than waiting")
+    timing.add_argument("--delay", type=float, default=0.0, metavar="SEC",
+                        help="pause between attempts, to stay under rate limits")
+
+    out = parser.add_argument_group("output")
+    out.add_argument("-v", "--verbose", action="store_true", help="print every response in full")
+    out.add_argument("-q", "--quiet", action="store_true", help="attempt lines only, no response bodies")
+    out.add_argument("--only-new", action="store_true", help="print only responses of a new shape")
+    out.add_argument("--match", metavar="RE", help="only show attempts whose response matches")
+    out.add_argument("--hide", metavar="RE", help="hide attempts whose response matches")
+    out.add_argument("-o", "--output", metavar="FILE", help="write every attempt as JSON lines")
+    out.add_argument("--version", action="version", version="NCFuzz " + VERSION)
+
     args = parser.parse_args()
-    
-    # Validate flags - --repeat cannot be used with --reconnect
-    if args.reconnect and args.repeat:
-        print("Error: --repeat cannot be used with --reconnect flag")
-        print("When using --reconnect, each attempt reconnects fresh, so repeat data is not needed.")
-        sys.exit(1)
-    
-    # Parse target
-    host, port = parse_target(args.target)
-    
-    # Run fuzzing
-    fuzz_connection(
-        host=host,
-        port=port,
-        wordlist_path=args.wordlist,
-        payload_template=args.payload,
-        initial_data=args.initial,
-        repeat_data=args.repeat,
-        reconnect=args.reconnect
-    )
+
+    if not args.wordlist and not args.lengths:
+        parser.error("give it something to send: -w FILE (or -) or --lengths SPEC")
+    if args.wordlist and args.lengths:
+        parser.error("-w and --lengths are two different payload sources; pick one")
+
+    sys.exit(run(args))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
