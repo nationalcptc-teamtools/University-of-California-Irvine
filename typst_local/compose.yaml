@@ -1,0 +1,17 @@
+# docker compose up -d --build
+# Set ACCESS_PASSWORD (and optionally TYPST_LOCAL_PORT) in a .env file next to this one.
+services:
+  typst-local:
+    build: .
+    image: typst-local:latest
+    container_name: typst-local
+    restart: unless-stopped
+    ports:
+      - "${TYPST_LOCAL_PORT:-3000}:3000"
+    environment:
+      ACCESS_PASSWORD: ${ACCESS_PASSWORD:-}
+    volumes:
+      - typst-local-data:/data
+
+volumes:
+  typst-local-data:

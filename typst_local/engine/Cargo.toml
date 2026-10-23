@@ -1,0 +1,27 @@
+[package]
+name = "typst-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Incremental Typst compile service for Typst Local (JSON lines over stdin/stdout)"
+publish = false
+
+[dependencies]
+typst = "=0.14.2"
+typst-svg = "=0.14.2"
+typst-pdf = "=0.14.2"
+typst-ide = "=0.14.2"
+typst-html = "=0.14.2"
+typst-render = "=0.14.2"
+base64 = "0.22"
+tiny-skia = "0.11"
+typst-kit = { version = "=0.14.2", default-features = false, features = ["fonts", "embed-fonts", "packages"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rayon = "1"
+comemo = "=0.5.1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4

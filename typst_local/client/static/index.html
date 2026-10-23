@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Projects · Typst Local</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="dashboard">
+  <header class="topbar">
+    <a href="/" class="logo"><span class="logo-mark">t</span>typst<span class="logo-local">local</span></a>
+    <div class="spacer"></div>
+    <button id="user-btn" class="user-btn"></button>
+  </header>
+  <main class="dash-main">
+    <div class="dash-head">
+      <h1>Projects</h1>
+      <button id="new-btn" class="btn primary">+ New project</button>
+    </div>
+    <div id="projects" class="cards"></div>
+  </main>
+  <script type="module" src="/dashboard.js"></script>
+</body>
+</html>

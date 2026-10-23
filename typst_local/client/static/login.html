@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Typst Local</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="login-page">
+  <form class="dialog login" id="login-form">
+    <a href="/" class="logo"><span class="logo-mark">t</span>typst<span class="logo-local">local</span></a>
+    <p class="dialog-message">This server is password protected.</p>
+    <label class="field"><span>Password</span><input class="text-input" type="password" id="password" autofocus></label>
+    <p id="error" class="error-text"></p>
+    <div class="dialog-actions"><button class="btn primary" type="submit">Sign in</button></div>
+  </form>
+  <script>
+    document.getElementById('login-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: document.getElementById('password').value }),
+      });
+      if (res.ok) {
+        const next = new URLSearchParams(location.search).get('next') || '/';
+        location.href = next.startsWith('/') && !next.startsWith('//') ? next : '/';
+      } else {
+        document.getElementById('error').textContent = 'Wrong password, try again.';
+      }
+    };
+  </script>
+</body>
+</html>
