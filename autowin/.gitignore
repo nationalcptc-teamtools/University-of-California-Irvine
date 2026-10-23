@@ -1,0 +1,9 @@
+# packaging / build artifacts
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# default loot store lives in ~/.autowin, but ignore a local ./loot too
+loot/

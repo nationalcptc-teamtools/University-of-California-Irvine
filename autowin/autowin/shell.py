@@ -1,6 +1,7 @@
 import re
 import shutil
 import subprocess
+import threading
 
 _ANSI = re.compile(r'\x1b\[[0-9;]*m')
 
@@ -48,3 +49,51 @@ def stream(*args: str, timeout: int | None = None) -> int:
         return -1
     except Exception:
         return -1
+
+
+def _terminate(proc: 'subprocess.Popen') -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def run_stream(*args: str, timeout: int | None = None):
+    """Run a command, yielding combined stdout+stderr lines (ANSI stripped) as
+    they are produced -- so callers can show live progress.
+
+    Never raises: on spawn failure it yields nothing; a timeout kills the
+    process (via a watchdog timer, so it fires even with no output) and ends
+    the stream.
+    """
+    try:
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except Exception:
+        return
+
+    timer = threading.Timer(timeout, _terminate, [proc]) if timeout else None
+    if timer:
+        timer.start()
+    try:
+        for line in proc.stdout:
+            yield strip_ansi(line.rstrip('\n'))
+    finally:
+        if timer:
+            timer.cancel()
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        _terminate(proc)

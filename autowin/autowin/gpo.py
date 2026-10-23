@@ -6,8 +6,8 @@ ships no canned payload. Requires pyGPOAbuse (pygpoabuse.py) on PATH or in CWD.
 """
 import os
 
-from shell import stream, have
-from console import info, err
+from .shell import stream, have
+from .console import info, err
 
 
 def _locate() -> list[str] | None:

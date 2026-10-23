@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autowin"
+version = "0.1.0"
+description = "Auto Win(DOWS)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+autowin = "autowin.cli:main"
+
+[tool.setuptools]
+packages = ["autowin"]

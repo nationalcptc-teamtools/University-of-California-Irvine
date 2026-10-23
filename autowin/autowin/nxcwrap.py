@@ -7,8 +7,8 @@ import re
 import socket
 from dataclasses import dataclass
 
-from shell import run
-from schema import User
+from .shell import run
+from .schema import User
 
 # PROTO  IP  PORT  HOSTNAME  <rest>
 HOST_LINE = re.compile(r'^(SMB|LDAP|WINRM|MSSQL|RDP|SSH|FTP|WMI)\s+(\S+)\s+(\d+)\s+(\S+)\s+(.*)$')

@@ -2,10 +2,10 @@
 import os
 import re
 
-from schema import DB, Vuln
-from nxcwrap import nxc, Cred
-from shell import run, stream, have
-from console import info, good, err, warn
+from .schema import DB, Vuln
+from .nxcwrap import nxc, Cred
+from .shell import run, stream, have
+from .console import info, good, err, warn
 
 _CA_NAME = re.compile(r'CA Name\s*:\s*(.+)')
 _TEMPLATE = re.compile(r'Template Name\s*:\s*(.+)')

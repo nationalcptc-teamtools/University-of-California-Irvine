@@ -3,10 +3,10 @@ import glob
 import os
 import re
 
-from schema import DB, Vuln
-from nxcwrap import nxc, Cred, host_rest
-from shell import run, stream, have
-from console import info, good, err, warn
+from .schema import DB, Vuln
+from .nxcwrap import nxc, Cred, host_rest
+from .shell import run, stream, have
+from .console import info, good, err, warn
 
 _DELEG = re.compile(r'(Unconstrained|Constrained(?:\s+w/\s+Protocol\s+Transition)?|Resource-Based Constrained)', re.I)
 

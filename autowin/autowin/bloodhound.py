@@ -3,9 +3,9 @@ import re
 import shutil
 from pathlib import Path
 
-from schema import DB
-from nxcwrap import nxc, Cred
-from console import info, good, err
+from .schema import DB
+from .nxcwrap import nxc, Cred
+from .console import info, good, err
 
 _ZIP = re.compile(r"(/[^\s'\"]+\.zip|[A-Za-z0-9_.-]+\.zip)")
 

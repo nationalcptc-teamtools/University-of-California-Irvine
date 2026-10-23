@@ -1,10 +1,10 @@
 import threading
 from typing import Any, Literal, Iterator, TYPE_CHECKING
 from dataclasses import dataclass, field
-from console import Colors, err, good, warn
+from .console import Colors, err, good, warn
 
 if TYPE_CHECKING:
-    from store import Store
+    from .store import Store
 
 HashSource = Literal['asrep', 'kerberoast', 'timeroast', 'ntlm']
 
@@ -12,7 +12,13 @@ HashSource = Literal['asrep', 'kerberoast', 'timeroast', 'ntlm']
 def _notable(pairs: dict[str, Any]) -> str:
     notable: list[str] = []
     for key, value in pairs.items():
-        if bool(value):
+        if isinstance(value, bool):
+            if value:
+                notable.append(f'({key})')
+        elif isinstance(value, int):
+            if value:                       # non-zero count: show the number
+                notable.append(f'({key}: {value})')
+        elif value:
             notable.append(f'({key})')
 
     return f' {Colors.RED}{" ".join(notable)}{Colors.RESET}' if len(notable) > 0 else ''
@@ -94,7 +100,9 @@ class User:
     description: str | None = None
     hash: Hash | None = None
     password: str | None = None
-    admin_on: set[str] = field(default_factory=set)   # hostnames where this user is Pwn3d!
+    admin_on: set[str] = field(default_factory=set)   # hostnames where this user is Pwn3d! (SMB)
+    winrm_on: set[str] = field(default_factory=set)   # hostnames where WinRM gives a shell
+    verified: bool = False                            # creds confirmed to authenticate
 
     @property
     def domain(self) -> 'Domain':
@@ -125,15 +133,35 @@ class User:
             self.admin_on |= user.admin_on
             updated = True
 
+        if not user.winrm_on.issubset(self.winrm_on):
+            self.winrm_on |= user.winrm_on
+            updated = True
+
+        if user.verified and not self.verified:
+            self.verified = True
+            updated = True
+
         return updated
 
+    def shells(self) -> list[str]:
+        kinds = []
+        if self.admin_on:
+            kinds.append('smb')
+        if self.winrm_on:
+            kinds.append('winrm')
+        return kinds
+
     def __format__(self, format_spec: str) -> str:
-        notable = _notable({
+        items = {
             'KRB hash': self.hash,
             'Password': self.password,
             'Bad PWDs': self.bad_pwd_count,
             'Admin': len(self.admin_on) > 0,
-        })
+        }
+        sh = self.shells()
+        if sh:
+            items[f'Shell: {",".join(sh)}'] = True
+        notable = _notable(items)
         description = '(more privileged)' if self.description is None else self.description
         return f'{self.domain}\\{self.name}: {description}{notable}'
 
@@ -144,6 +172,7 @@ class Domain:
 
     boxes: list[Box] = field(default_factory=list)
     dc: Box | None = None
+    password_policy: dict[str, str] | None = None
 
     def __format__(self, format_spec: str) -> str:
         return f'{self.name}'
@@ -305,12 +334,22 @@ class DB:
             print(f'\n{Colors.LIGHT_CYAN}# domain {domain}{Colors.RESET}')
             for box in self.boxes_in(domain):
                 print(f'  {box}')
+            if domain.password_policy:
+                print(f'  {Colors.LIGHT_WHITE}password policy:{Colors.RESET}')
+                for key, value in domain.password_policy.items():
+                    print(f'    {key}: {value}')
 
         creds = self.credentialed_users()
         print(f'\n{Colors.LIGHT_CYAN}# credentials ({len(creds)}){Colors.RESET}')
         for user in creds:
             secret = user.password if user.password is not None else '<hash>'
-            print(f'  {user.domain}\\{user.name}:{Colors.RED}{secret}{Colors.RESET}')
+            shells = user.shells()
+            tag = ''
+            if shells:
+                tag = f' {Colors.GREEN}(shell: {",".join(shells)}){Colors.RESET}'
+            elif user.verified:
+                tag = f' {Colors.GREEN}(verified){Colors.RESET}'
+            print(f'  {user.domain}\\{user.name}:{Colors.RED}{secret}{Colors.RESET}{tag}')
 
         hashes = [u for u in self._users if u.hash is not None and u.password is None]
         print(f'\n{Colors.LIGHT_CYAN}# uncracked hashes ({len(hashes)}){Colors.RESET}')

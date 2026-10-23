@@ -3,10 +3,10 @@ import os
 import re
 import tempfile
 
-from schema import DB, User, Hash
-from nxcwrap import nxc, Cred, login_ok, pwned
-from shell import run, have
-from console import info, good, warn
+from .schema import DB, User, Hash
+from .nxcwrap import nxc, Cred, login_ok, pwned
+from .shell import run, have
+from .console import info, good, warn, Progress
 
 _ASREP = re.compile(r'\$krb5asrep\$(?:\d+\$)?([^@:$\s]+)')
 _ASREP_HASH = re.compile(r'\$krb5asrep\$\S+')
@@ -123,7 +123,7 @@ def timeroast(db: DB, wordlist: str) -> None:
 
 
 def _timeroast_available() -> set[str]:
-    from modules import available
+    from .modules import available
     return available('smb')
 
 
@@ -180,16 +180,27 @@ def _read_outfile(path: str) -> str | None:
     return _dehex(line) if line else None
 
 
+def _elide(h: str, keep: int = 48) -> str:
+    """Shorten a long hash for display (NTLM prints whole; krb5 blobs elide)."""
+    h = h.strip()
+    return h if len(h) <= keep else f'{h[:32]}...{h[-12:]} ({len(h)} chars)'
+
+
 def crack_hashes(db: DB, wordlist: str) -> None:
     if not have('hashcat'):
         warn('hashcat not found; skipping cracking')
         return
-    for user in db._users:
-        if user.hash is None or user.password is not None:
-            continue
-        password = _crack(user.hash, wordlist)
-        if password is not None:
-            db.set_password(user, password, source=f'crack:{user.hash.source}')
+    targets = [u for u in db._users if u.hash is not None and u.password is None]
+    with Progress('cracking hashes', total=len(targets)) as bar:
+        for user in targets:
+            cracked_hash = user.hash.hash
+            source = user.hash.source
+            password = _crack(user.hash, wordlist)
+            if password is not None:
+                good(f'cracked {source} hash {_elide(cracked_hash)} '
+                     f'for {user.domain}\\{user.name}')
+                db.set_password(user, password, source=f'crack:{source}')
+            bar.update()
 
 
 def spray_targets(dc_ip: str, domain: str, users: list[str], candidates: list[str],
@@ -217,19 +228,22 @@ def spray_targets(dc_ip: str, domain: str, users: list[str], candidates: list[st
 
 def check_admin(db: DB) -> None:
     """Flag which boxes each credentialed user is local admin (Pwn3d!) on."""
-    for user in db.credentialed_users():
-        try:
-            cred = Cred.from_user(user)
-        except ValueError:
-            continue
-        for box in db.boxes_in(user.domain):
-            if box.hostname in user.admin_on:
+    users = db.credentialed_users()
+    total = sum(len(db.boxes_in(u.domain)) for u in users)
+    with Progress('admin check (Pwn3d!)', total=total) as bar:
+        for user in users:
+            try:
+                cred = Cred.from_user(user)
+            except ValueError:
+                bar.update(len(db.boxes_in(user.domain)))
                 continue
-            key = f'admin:{box.hostname}:{cred.key()}'
-            if db.store and db.store.is_done(key):
-                continue
-            if pwned(nxc('smb', box.ip, cred, timeout=30)):
-                user.admin_on.add(box.hostname)
-                good(f'{user.domain}\\{user.name} is admin on {box.hostname}')
-            if db.store:
-                db.store.mark_done(key)
+            for box in db.boxes_in(user.domain):
+                if box.hostname not in user.admin_on:
+                    key = f'admin:{box.hostname}:{cred.key()}'
+                    if not (db.store and db.store.is_done(key)):
+                        if pwned(nxc('smb', box.ip, cred, timeout=30)):
+                            user.admin_on.add(box.hostname)
+                            good(f'{user.domain}\\{user.name} is admin on {box.hostname}')
+                        if db.store:
+                            db.store.mark_done(key)
+                bar.update()

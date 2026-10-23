@@ -48,6 +48,14 @@ CREATE TABLE IF NOT EXISTS loot (
     UNIQUE(host, module, data));
 CREATE TABLE IF NOT EXISTS bloodhound (
     domain TEXT PRIMARY KEY, username TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS policy (
+    domain TEXT, key TEXT, value TEXT, ts REAL,
+    UNIQUE(domain, key));
+CREATE TABLE IF NOT EXISTS cred_status (
+    domain TEXT, username TEXT, valid INTEGER, shell TEXT, host TEXT, ts REAL,
+    UNIQUE(domain, username));
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY, value TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS completed (
     key TEXT PRIMARY KEY, ts REAL);
 """
@@ -121,6 +129,67 @@ class Store:
         return self._insert('INSERT OR IGNORE INTO loot VALUES (?,?,?,?,?)',
                             (host, module, domain, data, time.time()))
 
+    def add_policy(self, domain, key, value) -> None:
+        with self._lock:
+            self.db.execute('INSERT OR REPLACE INTO policy VALUES (?,?,?,?)',
+                            (domain, key, value, time.time()))
+
+    def list_policy(self, domain) -> dict:
+        with self._lock:
+            rows = self.db.execute('SELECT key,value FROM policy WHERE domain=?',
+                                   (domain,)).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    # ---- settings (key/value) + default target ------------------------
+
+    def set_setting(self, key, value) -> None:
+        with self._lock:
+            self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?,?)',
+                            (key, value, time.time()))
+
+    def get_setting(self, key) -> str | None:
+        with self._lock:
+            row = self.db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_default_target(self, target) -> None:
+        self.set_setting('default_target', target)
+
+    def get_default_target(self) -> str | None:
+        return self.get_setting('default_target')
+
+    def remove_host(self, ident) -> int:
+        """Delete host(s) matching ident by hostname or ip. Returns row count."""
+        with self._lock:
+            cur = self.db.execute('DELETE FROM hosts WHERE hostname=? OR ip=?',
+                                  (ident, ident))
+            return cur.rowcount
+
+    # ---- credential verification status -------------------------------
+
+    def set_cred_status(self, domain, username, valid, shell, host='') -> None:
+        with self._lock:
+            self.db.execute('INSERT OR REPLACE INTO cred_status VALUES (?,?,?,?,?,?)',
+                            (domain, username, int(bool(valid)), shell or '', host or '',
+                             time.time()))
+
+    def get_cred_status(self, domain, username) -> dict | None:
+        with self._lock:
+            row = self.db.execute(
+                'SELECT valid,shell,host FROM cred_status WHERE domain=? AND username=?',
+                (domain, username)).fetchone()
+        return {'valid': bool(row[0]), 'shell': row[1], 'host': row[2]} if row else None
+
+    def cred_status_map(self, domain=None) -> dict:
+        sql = 'SELECT domain,username,valid,shell FROM cred_status'
+        args: tuple = ()
+        if domain:
+            sql += ' WHERE domain=?'
+            args = (domain,)
+        with self._lock:
+            rows = self.db.execute(sql, args).fetchall()
+        return {(r[0], r[1]): {'valid': bool(r[2]), 'shell': r[3]} for r in rows}
+
     # ---- bloodhound bookkeeping ---------------------------------------
 
     def bloodhound_done(self, domain) -> bool:
@@ -189,6 +258,67 @@ class Store:
             rows = self.db.execute('SELECT host,source,title,cve,esc,detail FROM vulns').fetchall()
         return [{'host': r[0], 'source': r[1], 'title': r[2], 'cve': r[3],
                  'esc': r[4], 'detail': r[5]} for r in rows]
+
+    # ---- export / import support --------------------------------------
+
+    def merge_db(self, other_path) -> int:
+        """Fold another autowin.sqlite into this one (INSERT OR IGNORE across
+        every shared table, so unique rows and completed-step markers merge).
+        Returns the number of rows added."""
+        with self._lock:
+            self.db.execute('ATTACH DATABASE ? AS imp', (str(other_path),))
+            total = 0
+            try:
+                tables = self.db.execute(
+                    "SELECT name FROM imp.sqlite_master "
+                    "WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+                for (t,) in tables:
+                    local = self.db.execute(
+                        "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?",
+                        (t,)).fetchone()
+                    if not local:
+                        continue
+                    try:
+                        cur = self.db.execute(f'INSERT OR IGNORE INTO main."{t}" SELECT * FROM imp."{t}"')
+                        total += max(cur.rowcount, 0)
+                    except sqlite3.Error:
+                        continue   # schema drift on this table; skip it
+            finally:
+                self.db.execute('DETACH DATABASE imp')
+            return total
+
+    def _write_unique(self, path, lines) -> None:
+        seen: set = set()
+        out: list = []
+        for ln in lines:
+            if ln and ln not in seen:
+                seen.add(ln)
+                out.append(ln)
+        with self._lock:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(out) + ('\n' if out else ''))
+
+    def rebuild_loot_files(self) -> None:
+        """Regenerate users.txt / users_<domain>.txt / hashes/<source>.txt from
+        the DB, so they stay correct after a raw DB merge on import."""
+        with self._lock:
+            users = self.db.execute('SELECT DISTINCT domain, username FROM users').fetchall()
+            hashes = self.db.execute('SELECT DISTINCT source, hash FROM hashes').fetchall()
+        all_users: list = []
+        per_dom: dict = {}
+        for dom, user in users:
+            if user.endswith('$'):          # skip machine accounts in spray lists
+                continue
+            all_users.append(user)
+            per_dom.setdefault(dom, []).append(user)
+        self._write_unique(self.dir / 'users.txt', all_users)
+        for dom, us in per_dom.items():
+            self._write_unique(self.dir / f'users_{_slug(dom)}.txt', us)
+        per_src: dict = {}
+        for src, h in hashes:
+            per_src.setdefault(src, []).append(h)
+        for src, hs in per_src.items():
+            self._write_unique(self.hashes_dir / f'{_slug(src)}.txt', hs)
 
     def close(self) -> None:
         with self._lock:

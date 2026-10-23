@@ -14,6 +14,11 @@ fi
 FAILED=()
 run() { echo "[*] $*"; "$@" || FAILED+=("$*"); }
 
+# autowin lives one directory up from setup/; resolve it relative to this
+# script so the install works no matter where the script is invoked from.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AUTOWIN_SRC="$SCRIPT_DIR/../autowin"
+
 run wget https://archive.kali.org/archive-keyring.gpg -O /usr/share/keyrings/kali-archive-keyring.gpg
 run apt update -y
 
@@ -39,6 +44,8 @@ run pipx install bloodyAD
 run pipx install uv
 run pipx install git+https://github.com/Pennyw0rth/NetExec
 run pipx install penelope-shell-handler
+# autowin: AD enumeration/discovery tool from this repo -> `autowin` on PATH
+run pipx install "$AUTOWIN_SRC"
 run apt install -y git
 run apt install -y wget
 run apt install -y curl

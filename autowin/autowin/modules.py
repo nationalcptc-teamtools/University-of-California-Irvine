@@ -6,13 +6,13 @@ modules actually installed, so unknown names are skipped harmlessly.
 """
 import re
 from dataclasses import dataclass
-from typing import Literal, Pattern
+from typing import Literal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from schema import DB, Box, Vuln, User, Hash
-from nxcwrap import nxc, Cred, host_rest
-from shell import run
-from console import info, err
+from .schema import DB, Box, User
+from .nxcwrap import nxc, Cred, host_rest
+from .shell import run
+from .console import info, err, warn, plain, Progress
 
 Kind = Literal['vuln', 'loot', 'info']
 
@@ -36,7 +36,7 @@ MODULES: list[ModuleSpec] = [
     ModuleSpec('smb', 'printnightmare',  'PrintNightmare',              'vuln', 'CVE-2021-1675/34527'),
     ModuleSpec('smb', 'smbghost',        'SMBGhost',                    'vuln', 'CVE-2020-0796'),
     ModuleSpec('smb', 'coerce_plus',     'Authentication coercion',     'vuln', 'PetitPotam/DFSCoerce'),
-    ModuleSpec('smb', 'badsuccessor',    'BadSuccessor (dMSA)',         'vuln'),
+    ModuleSpec('ldap', 'badsuccessor',   'BadSuccessor (dMSA)',         'vuln'),
     ModuleSpec('smb', 'backup_operator', 'Backup Operators -> NTDS',    'vuln'),
     ModuleSpec('smb', 'ntlmv1',          'NTLMv1 downgrade allowed',    'vuln'),
     ModuleSpec('smb', 'webdav',          'WebClient/WebDAV running',    'vuln'),
@@ -66,7 +66,7 @@ MODULES: list[ModuleSpec] = [
     ModuleSpec('smb', 'wifi',               'Wi-Fi passwords',          'loot'),
     ModuleSpec('smb', 'notepad',            'Notepad tabs',             'loot'),
     ModuleSpec('smb', 'veeam',              'Veeam creds',              'loot'),
-    ModuleSpec('smb', 'sccm',               'SCCM secrets',             'loot'),
+    ModuleSpec('ldap', 'sccm',              'SCCM infrastructure',      'loot'),
 
     # --- SMB: informational posture ---
     ModuleSpec('smb', 'bitlocker',       'BitLocker status',            'info'),
@@ -79,52 +79,55 @@ MODULES: list[ModuleSpec] = [
     ModuleSpec('mssql', 'enum_logins',      'MSSQL logins',             'loot'),
 ]
 
-_SIGNALS: dict[Kind, Pattern[str]] = {
-    'vuln': re.compile(r'VULNERABLE|vulnerable|exploitable|\bCVE-|is in .*Backup Operators|dMSA', re.I),
-    'loot': re.compile(r'\[\+\]|password|cpassword|secret|hash', re.I),
-    # info must be specific keywords, never a bare [+] (which is just a login echo)
-    'info': re.compile(r'quota|\bUAC\b|bitlocker|defender|antivirus|\bAV\b|enabled|disabled|'
-                       r'PKI|certificate authorit|enrolled', re.I),
-}
-
 # the `[+] domain\user:secret` echo nxc prints on a (successful) login; the
 # username may be empty for an anonymous/null bind (`[+] domain\:`), hence [^\s]*
 _AUTH_ECHO = re.compile(r'^\[[+\-]\]\s+\S+\\[^\s]*:')
 # conservative loot harvest: DOMAIN\user:plaintext (plaintext not a bare NTLM hash)
 _LOOT_CRED = re.compile(r'([A-Za-z0-9.\-]+)\\([A-Za-z0-9._$\-]+):([^\s:]{2,})')
 
+# nxc prints module output with the MODULE NAME (not the protocol) as the first
+# column, e.g. `ENUM_AV  10.0.0.5  445  HOST  Found ...`; match that 5-column
+# shape for any leading token so module findings aren't dropped.
+_MOD_LINE = re.compile(r'^([A-Za-z0-9_.\-]+)\s+\S+\s+\d+\s+\S+\s+(.*)$')
+
 _available: dict[str, set[str]] = {}
 
 
 def available(proto: str) -> set[str]:
     if proto not in _available:
+        out = run('nxc', proto, '-L', timeout=60)
         names: set[str] = set()
-        for line in run('nxc', proto, '-L', timeout=60).splitlines():
+        for line in out.splitlines():
             hr = line.strip().split()
             # lines look like: `[*] module_name   description...`
             if len(hr) >= 2 and hr[0] == '[*]':
                 names.add(hr[1])
+        if not names:
+            # `nxc <proto> -L` returned no modules -- usually an nxc-side error
+            # (e.g. the MSSQL workspace DB schema mismatch). Surface it.
+            first = next((l.strip() for l in out.splitlines() if l.strip()), '')
+            warn(f'sweep: no {proto} modules available (nxc {proto} -L said: {first!r}); '
+                 f'skipping all {proto} modules')
         _available[proto] = names
     return _available[proto]
 
 
-def _extract(spec: ModuleSpec, output: str) -> list[str]:
-    signal = _SIGNALS[spec.kind]
-    hits: list[str] = []
-    seen: set[str] = set()
+def _report_lines(output: str) -> list[str]:
+    """Pull a module's own output lines for manual review: drop the host banner
+    and the login echo, keep whatever the module actually printed."""
+    lines: list[str] = []
     for line in output.splitlines():
-        hr = host_rest(line)
-        if hr is None:
+        m = _MOD_LINE.match(line.strip())
+        if m is None:
             continue
-        rest = hr[1].strip()
+        rest = m.group(2).strip()
         if not rest or _AUTH_ECHO.match(rest):
             continue
-        if signal.search(rest):
-            clean = rest[:200]
-            if clean not in seen:
-                seen.add(clean)
-                hits.append(clean)
-    return hits
+        # skip the connection banner (`[*] Windows ... (name:..)(domain:..)`)
+        if rest.startswith('[*]') and ('(name:' in rest or '(domain:' in rest):
+            continue
+        lines.append(rest)
+    return lines
 
 
 def _harvest_creds(db: DB, box: Box, module: str, output: str) -> None:
@@ -199,16 +202,22 @@ def sweep(db: DB, threads: int = 24) -> None:
 
     with ThreadPoolExecutor(max_workers=threads) as pool:
         futures = [pool.submit(work, t) for t in tasks]
-        for future in as_completed(futures):
-            try:
-                box, spec, key, output = future.result()
-            except Exception as e:
-                err(f'sweep: module run failed: {e}')
-                continue
-            for hit in _extract(spec, output):
-                db.add_vuln(Vuln(title=spec.title, owner=box, source=spec.name,
-                                 cve=spec.cve, detail=hit))
-            if spec.kind == 'loot':
-                _harvest_creds(db, box, spec.name, output)
-            if db.store:
-                db.store.mark_done(key)
+        with Progress('module sweep', total=len(futures)) as bar:
+            for future in as_completed(futures):
+                try:
+                    box, spec, key, output = future.result()
+                except Exception as e:
+                    err(f'sweep: module run failed: {e}')
+                    bar.update()
+                    continue
+                lines = _report_lines(output)
+                if lines:
+                    cve = f' {spec.cve}' if spec.cve else ''
+                    info(f'{box.hostname} {spec.proto}/{spec.name} ({spec.title}{cve}):')
+                    for ln in lines:
+                        plain('      ' + ln)
+                if spec.kind == 'loot':
+                    _harvest_creds(db, box, spec.name, output)
+                if db.store:
+                    db.store.mark_done(key)
+                bar.update()
