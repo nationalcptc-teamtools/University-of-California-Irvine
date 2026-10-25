@@ -205,11 +205,14 @@ api.get('/projects/:id/blob/:hash', loadRoom, (req, res) => {
   res.sendFile(file);
 });
 
+// Which preview the client means: a file it previews on its own, or the main file.
+const previewTarget = (req) => (req.body?.target ? storage.normalizePath(req.body.target) : null);
+
 // Click-to-source: which part of which file produced this point in the preview?
 api.post('/projects/:id/jump', express.json(), loadRoom, async (req, res) => {
   const { page, x, y } = req.body || {};
   if (![page, x, y].every(Number.isFinite)) return res.status(400).json({ error: 'page, x and y are required' });
-  const result = await req.room.jump(Math.trunc(page), x, y);
+  const result = await req.room.jump(Math.trunc(page), x, y, previewTarget(req));
   if (!result) return res.status(501).json({ error: 'Click-to-source needs the incremental engine (npm run build:engine)' });
   res.json(result);
 });
@@ -219,7 +222,7 @@ api.post('/projects/:id/cursor', express.json(), loadRoom, async (req, res) => {
   const p = storage.normalizePath(req.body?.path);
   const offset = req.body?.offset;
   if (!p || !Number.isFinite(offset)) return res.status(400).json({ error: 'path and offset are required' });
-  const result = await req.room.cursor(p, Math.max(0, Math.trunc(offset)));
+  const result = await req.room.cursor(p, Math.max(0, Math.trunc(offset)), previewTarget(req));
   if (!result) return res.status(501).json({ error: 'Needs the incremental engine (npm run build:engine)' });
   res.json(result);
 });

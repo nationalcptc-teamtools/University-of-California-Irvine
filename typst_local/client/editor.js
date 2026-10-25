@@ -220,11 +220,14 @@ function openFile(path, { focus = true } = {}) {
   awareness.setLocalStateField('file', currentPath);
   if (!path) {
     $('editor').append(h('div.binary-view', null, h('p', null, 'This project has no files yet.')));
+    setSoloFile(null);
     renderTree();
     return;
   }
   history.replaceState(null, '', '#' + encodeURIComponent(path));
   $('file-title').textContent = path;
+  // The toggle above the preview offers the last .typ file opened on its own.
+  setSoloFile(path.endsWith('.typ') && path !== mainFile() ? path : soloPath);
 
   const entry = files.get(path);
   if (entry instanceof Y.Text) {
@@ -334,7 +337,9 @@ function renderProblems() {
 
 // ---- preview ----------------------------------------------------------------
 
-const preview = new Preview($('preview'), { onMissing: () => provider.send('resync') });
+const preview = new Preview($('preview'), {
+  onMissing: () => provider.send(JSON.stringify({ type: 'resync', path: previewTarget() })),
+});
 
 function renderStatus() {
   const el = $('compile-status');
@@ -425,7 +430,11 @@ async function followCursor() {
   const path = currentPath;
   let res;
   try {
-    res = await api('POST', `/api/projects/${projectId}/cursor`, { path, offset: view.state.selection.main.head });
+    res = await api('POST', `/api/projects/${projectId}/cursor`, {
+      path,
+      offset: view.state.selection.main.head,
+      target: previewTarget(),
+    });
   } catch {
     return; // e.g. the fallback compiler, which can't do this
   }
@@ -610,7 +619,7 @@ $('preview').addEventListener('click', async (e) => {
   const y = ((e.clientY - rect.top) / rect.height) * page.h;
   let res;
   try {
-    res = await api('POST', `/api/projects/${projectId}/jump`, { page: index, x, y });
+    res = await api('POST', `/api/projects/${projectId}/jump`, { page: index, x, y, target: previewTarget() });
   } catch (err) {
     return toast(err.message, 'error');
   }
@@ -635,8 +644,73 @@ $('preview-back').onclick = () => {
   $('preview-back').hidden = linkHistory.length === 0;
 };
 
+// ---- what the preview shows -------------------------------------------------
+// Either the project's main file, or the last .typ file you opened, compiled on
+// its own. The server compiles whichever one this client asked for.
+
+const TARGET_KEY = 'typst-local-preview-target';
+let soloPath = null; // the last .typ file opened that isn't the main file
+let soloMode = false; // show that file instead of the main one
+try {
+  soloMode = localStorage.getItem(TARGET_KEY) === 'file';
+} catch {}
+
+/** The file the server compiles for us, or null for the project's main file. */
+const previewTarget = () => (soloMode ? soloPath : null);
+let sentTarget = null; // what the server was last told
+
+function renderPreviewTarget() {
+  $('preview-target').hidden = !soloPath;
+  if (!soloPath) return;
+  const main = mainFile();
+  const name = (path) => path.split('/').pop();
+  Object.assign($('target-main'), { textContent: name(main), title: `Preview ${main}, the project's main file` });
+  Object.assign($('target-file'), { textContent: name(soloPath), title: `Preview ${soloPath} on its own` });
+  $('target-main').classList.toggle('active', !soloMode);
+  $('target-file').classList.toggle('active', soloMode);
+}
+
+/** Asks the server for the preview we want now, and drops what belonged to the old one. */
+function syncTarget({ force = false } = {}) {
+  const target = previewTarget();
+  if (!force && target === sentTarget) return;
+  sentTarget = target;
+  lastCompile = null;
+  linkHistory.length = 0;
+  $('preview-back').hidden = true;
+  // The pages still on screen are the other document's; the next compile replaces them.
+  $('preview').classList.add('stale');
+  renderStatus();
+  renderProblems();
+  provider.send(JSON.stringify({ type: 'target', path: target }));
+}
+
+/**
+ * Remembers the file the toggle offers. Called whenever a file is opened and
+ * whenever the project changes, so a deleted file or a new main file can't
+ * leave the toggle pointing at something that makes no sense.
+ */
+function setSoloFile(path) {
+  soloPath = path && path !== mainFile() && path.endsWith('.typ') && files.has(path) ? path : null;
+  renderPreviewTarget();
+  syncTarget();
+}
+
+function setSoloMode(on) {
+  soloMode = on;
+  try {
+    localStorage.setItem(TARGET_KEY, on ? 'file' : 'main');
+  } catch {}
+  renderPreviewTarget();
+  syncTarget();
+  renderTree();
+}
+$('target-main').onclick = () => setSoloMode(false);
+$('target-file').onclick = () => setSoloMode(true);
+
 provider.addEventListener('message', ({ detail: msg }) => {
   if (msg.type === 'compile') {
+    if ((msg.target ?? null) !== previewTarget()) return; // a preview we no longer show
     lastCompile = msg;
     if (msg.preview) preview.update(msg.preview);
     if (msg.outline) outlineUI.update(msg.outline);
@@ -664,6 +738,8 @@ provider.addEventListener('status', () => {
   $('conn').className = 'conn ' + provider.status;
   $('conn').title = provider.status;
   renderStatus();
+  // A reconnected server knows nothing about what we chose to preview.
+  if (provider.status === 'connected' && previewTarget()) syncTarget({ force: true });
   if (provider.status === 'removed') {
     dialog({ title: 'Project deleted', message: 'This project was deleted by someone else.', confirm: 'Back to projects', cancel: null }).then(
       () => (location.href = '/'),
@@ -884,6 +960,7 @@ function renderTree() {
         fileIcon(file.path),
         h('span.tree-name' + (errorFiles.has(file.path) ? '.has-error' : ''), null, file.name),
         file.path === main && h('span.badge', { title: 'Main file (compiled)' }, 'main'),
+        soloMode && file.path === soloPath && h('span.badge', { title: 'Previewed on its own' }, 'preview'),
         h(
           'span.presence',
           null,
@@ -980,6 +1057,7 @@ function movePath(from, to) {
   files.set(to, entry instanceof Y.Text ? new Y.Text(entry.toString()) : { ...entry });
   files.delete(from);
   if (settings.get('main') === from) settings.set('main', to);
+  if (soloPath === from) soloPath = to; // the preview toggle follows the rename
 }
 
 /** Moves or renames a file or a whole folder. Returns false on a name clash. */
@@ -1193,9 +1271,13 @@ files.observe((event) => {
   if (currentPath && event.keysChanged.has(currentPath)) openFile(currentPath, { focus: false });
   else if (!currentPath && files.size) openFile(mainFile(), { focus: false });
   else renderTree();
+  setSoloFile(soloPath); // the file the toggle offers may have been deleted or renamed
 });
 folders.observe(renderTree);
-settings.observe(renderTree);
+settings.observe(() => {
+  renderTree();
+  setSoloFile(soloPath); // a different main file changes what the toggle offers
+});
 
 // ---- presence ---------------------------------------------------------------
 

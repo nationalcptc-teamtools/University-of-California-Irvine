@@ -30,8 +30,7 @@ gitlog.events.on('synced', (id) => rooms.get(id)?.broadcastJSON({ type: 'history
 
 compiler.on('reset', () => {
   for (const room of rooms.values()) {
-    room.sent.clear();
-    room.sentFonts = null;
+    for (const target of room.targets) target.reset();
     room.scheduleCompile();
   }
 });
@@ -102,6 +101,215 @@ const send = (ws, data) => {
   if (ws.readyState === 1) ws.send(data, (err) => err && ws.close());
 };
 
+/**
+ * One compiled entry point: the project's main file, or a single file someone
+ * chose to preview on its own. The compiler keeps its incremental state per
+ * project id, so each target compiles under its own id and keeps its own delta
+ * of what the compiler holds, its own preview and its own heading list.
+ */
+class Target {
+  /**
+   * @param {Room} room
+   * @param {string | null} path  the file to compile, or null for the project's main file
+   */
+  constructor(room, path) {
+    this.room = room;
+    this.path = path;
+    this.key = path ? `${room.id}:${path}` : room.id;
+    this.subs = new Set(); // clients watching this file; the main file goes to everyone
+    this.sent = new Map(); // what the compile worker currently holds: rel -> text | "blob:<hash>"
+    this.sentFonts = null;
+    this.compiling = false;
+    this.compileAgain = false;
+    this.last = null; // last compile message (without the preview)
+    this.preview = null; // {defs, defsHash, order: [tid], pages: Map<tid, {tid, w, h, svg}>}
+    this.glyphs = new Map(); // id -> <symbol> markup shared by all pages (engine only)
+    this.outline = null; // headings of the last successful compile (engine only)
+    this.outlineJson = null;
+  }
+
+  get mainFile() {
+    return this.path || this.room.mainFile;
+  }
+
+  /** The clients this target's previews go to. */
+  get clients() {
+    if (this.path) return this.subs;
+    // Clients previewing a single file have no use for the main document.
+    return [...this.room.conns.keys()].filter((ws) => !this.room.watching.has(ws));
+  }
+
+  get dead() {
+    return this.destroyed || this.room.destroyed;
+  }
+
+  /** Forgets what the compiler holds, so the next compile sends everything again. */
+  reset() {
+    this.sent.clear();
+    this.sentFonts = null;
+  }
+
+  destroy() {
+    clearTimeout(this.compileTimer);
+    this.destroyed = true;
+    compiler.drop(this.key);
+  }
+
+  /** Builds the minimal set of changes the compile worker needs. */
+  takeDelta() {
+    const set = [];
+    const remove = [];
+    const fonts = [];
+    const seen = new Set();
+    this.room.files.forEach((v, rel) => {
+      seen.add(rel);
+      if (v instanceof Y.Text) {
+        const text = v.toString();
+        if (this.sent.get(rel) !== text) {
+          set.push([rel, text]);
+          this.sent.set(rel, text);
+        }
+      } else if (v?.blob) {
+        const disk = storage.blobPath(this.room.id, v.blob);
+        if (this.sent.get(rel) !== 'blob:' + v.blob) {
+          set.push([rel, { disk }]);
+          this.sent.set(rel, 'blob:' + v.blob);
+        }
+        if (storage.isFontPath(rel)) fonts.push(disk);
+      }
+    });
+    for (const rel of [...this.sent.keys()]) {
+      if (!seen.has(rel)) {
+        remove.push(rel);
+        this.sent.delete(rel);
+      }
+    }
+    fonts.sort();
+    const fontsKey = fonts.join('\n');
+    const fontsChanged = fontsKey !== this.sentFonts;
+    this.sentFonts = fontsKey;
+    return { set, remove, fonts: fontsChanged ? fonts : undefined };
+  }
+
+  request(extra = {}) {
+    return compiler.request({
+      type: 'compile',
+      project: this.key,
+      workspace: storage.workspaceDir(this.room.id),
+      main: this.mainFile,
+      imageBase: this.room.imageBase,
+      ...this.takeDelta(),
+      ...extra,
+    });
+  }
+
+  /** Everything a newly connected client needs: last compile, outline, full preview. */
+  fullMessage() {
+    return { ...this.last, type: 'compile', target: this.path, outline: this.outline ?? undefined, preview: this.fullPreview() };
+  }
+
+  /** The whole current preview, for clients that have nothing yet. */
+  fullPreview() {
+    if (!this.preview) return null;
+    return {
+      defs: this.preview.defs,
+      glyphs: Object.fromEntries(this.glyphs),
+      pages: this.preview.order.map((tid) => this.preview.pages.get(tid)),
+    };
+  }
+
+  /**
+   * Stores a new preview and returns what clients holding the previous one
+   * need: changed defs and only the pages they don't have (null if nothing changed).
+   */
+  applyPreview(next) {
+    this.room.storeImages(next.images);
+    const newGlyphs = {};
+    for (const [id, markup] of Object.entries(next.glyphs || {})) {
+      if (!this.glyphs.has(id)) this.glyphs.set(id, (newGlyphs[id] = markup));
+    }
+    const hasNewGlyphs = Object.keys(newGlyphs).length > 0;
+    const prev = this.preview;
+    // The engine only renders pages it hasn't rendered before; reuse the rest.
+    const pages = next.pages.map((p) => (p.svg !== undefined ? p : { ...p, svg: prev?.pages.get(p.tid)?.svg }));
+    this.preview = {
+      defs: next.defs,
+      defsHash: next.defsHash,
+      order: pages.map((p) => p.tid),
+      pages: new Map(pages.map((p) => [p.tid, p])),
+    };
+    const defsChanged = !prev || prev.defsHash !== next.defsHash;
+    const sameOrder = prev && prev.order.length === next.pages.length && prev.order.every((tid, i) => tid === next.pages[i].tid);
+    if (!defsChanged && sameOrder && !hasNewGlyphs) return null;
+    return {
+      defs: defsChanged ? next.defs : undefined,
+      glyphs: hasNewGlyphs ? newGlyphs : undefined,
+      pages: pages.map((p) => (prev?.pages.has(p.tid) ? { tid: p.tid, w: p.w, h: p.h } : p)),
+    };
+  }
+
+  sendToClients(obj) {
+    const msg = JSON.stringify(obj);
+    for (const ws of this.clients) send(ws, msg);
+  }
+
+  scheduleCompile(delay = COMPILE_DELAY_MS) {
+    clearTimeout(this.compileTimer);
+    this.compileTimer = setTimeout(() => this.compile(), delay);
+  }
+
+  async compile() {
+    if (this.dead) return;
+    if (this.compiling) {
+      this.compileAgain = true;
+      return;
+    }
+    this.compiling = true;
+    try {
+      let res = await this.request();
+      if (this.dead) return;
+      // If the compiler assumed we have pages we don't (e.g. after a restart), get them all.
+      if (res.preview?.pages.some((p) => p.svg === undefined && !this.preview?.pages.get(p.tid)?.svg)) {
+        res = await this.request({ full: true });
+        if (this.dead) return;
+      }
+      const msg = {
+        type: 'compile',
+        target: this.path,
+        status: res.status,
+        diagnostics: res.diagnostics,
+        pages: res.pages ?? this.last?.pages ?? 0,
+        ms: res.ms,
+        at: Date.now(),
+      };
+      this.last = msg;
+      const out = { ...msg };
+      if (res.preview) {
+        const preview = this.applyPreview(res.preview);
+        if (preview) out.preview = preview;
+      }
+      // The heading list only goes out when it changed.
+      if (res.outline) {
+        const json = JSON.stringify(res.outline);
+        if (json !== this.outlineJson) {
+          this.outline = res.outline;
+          this.outlineJson = json;
+          out.outline = res.outline;
+        }
+      }
+      this.sendToClients(out);
+    } catch (e) {
+      console.error(`[room ${this.room.id}] compiling ${this.mainFile} failed:`, e);
+    } finally {
+      this.compiling = false;
+      if (this.compileAgain) {
+        this.compileAgain = false;
+        this.scheduleCompile(0);
+      }
+    }
+  }
+}
+
 export class Room {
   constructor(id, meta) {
     this.id = id;
@@ -115,16 +323,10 @@ export class Room {
     /** websocket -> awareness client ids it controls */
     this.conns = new Map();
 
-    this.sent = new Map(); // what the compile worker currently holds: rel -> text | "blob:<hash>"
-    this.sentFonts = null;
-    this.compiling = false;
-    this.compileAgain = false;
-    this.last = null; // last compile message (without the preview)
-    this.preview = null; // {defs, defsHash, order: [tid], pages: Map<tid, {tid, w, h, svg}>}
     this.images = new Map(); // hash -> {mime, data}: images referenced by previews
-    this.glyphs = new Map(); // id -> <symbol> markup shared by all pages (engine only)
-    this.outline = null; // headings of the last successful compile (engine only)
-    this.outlineJson = null;
+    this.primary = new Target(this, null); // the project's main file, compiled for everyone
+    this.solo = new Map(); // path -> Target: files clients asked to preview on their own
+    this.watching = new Map(); // websocket -> the file it previews on its own, if any
     this.pendingAuthors = new Set();
     this.changedSinceSnapshot = false;
     this.versionCache = new Map(); // vid -> full preview
@@ -182,8 +384,7 @@ export class Room {
 
     ws.on('message', (data, isBinary) => {
       if (!isBinary) {
-        // A client that lost track of the preview asks for all of it again.
-        if (data.toString() === 'resync' && this.last) send(ws, JSON.stringify(this.fullMessage()));
+        this.onTextMessage(ws, data.toString());
         return;
       }
       try {
@@ -208,7 +409,52 @@ export class Room {
     }
 
     send(ws, JSON.stringify({ type: 'meta', meta: this.meta }));
-    if (this.last) send(ws, JSON.stringify(this.fullMessage()));
+    if (this.primary.last) send(ws, JSON.stringify(this.primary.fullMessage()));
+  }
+
+  /** Text frames are JSON requests about the preview. */
+  onTextMessage(ws, text) {
+    let msg;
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      return;
+    }
+    const path = typeof msg.path === 'string' ? msg.path : null;
+    if (msg.type === 'target') {
+      this.setTarget(ws, path);
+    } else if (msg.type === 'resync') {
+      // A client that lost track of the preview asks for all of it again.
+      const target = this.targetFor(path);
+      if (target?.last) send(ws, JSON.stringify(target.fullMessage()));
+    }
+  }
+
+  /**
+   * Chooses what this client previews: `path` on its own, or the project's main
+   * file (null). A file is only compiled on its own while someone watches it.
+   */
+  setTarget(ws, path) {
+    this.dropTargets(ws, path);
+    let target = this.primary;
+    if (path) {
+      target = this.solo.get(path);
+      if (!target) this.solo.set(path, (target = new Target(this, path)));
+      target.subs.add(ws);
+      this.watching.set(ws, path);
+    }
+    if (target.last) send(ws, JSON.stringify(target.fullMessage()));
+    else target.scheduleCompile(0);
+  }
+
+  /** Stops this client watching files previewed on their own (all but `keep`). */
+  dropTargets(ws, keep = null) {
+    this.watching.delete(ws);
+    for (const target of this.solo.values()) {
+      if (target.path === keep || !target.subs.delete(ws) || target.subs.size) continue;
+      target.destroy();
+      this.solo.delete(target.path);
+    }
   }
 
   onMessage(ws, data) {
@@ -227,6 +473,7 @@ export class Room {
   removeConnection(ws) {
     const ids = this.conns.get(ws);
     if (!ids) return;
+    this.dropTargets(ws);
     this.conns.delete(ws);
     awarenessProtocol.removeAwarenessStates(this.awareness, [...ids], null);
     this.keepAlive();
@@ -254,11 +501,11 @@ export class Room {
     clearTimeout(this.snapshotTimer);
     clearTimeout(this.saveTimer);
     clearTimeout(this.mirrorTimer);
-    clearTimeout(this.compileTimer);
     clearTimeout(this.unloadTimer);
     this.destroyed = true;
     rooms.delete(this.id);
-    compiler.drop(this.id);
+    for (const target of this.targets) target.destroy();
+    this.solo.clear();
     this.awareness.destroy();
     this.doc.destroy();
   }
@@ -443,44 +690,18 @@ export class Room {
 
   // ---- compilation -------------------------------------------------------
 
-  /** Builds the minimal set of changes the compile worker needs. */
-  takeDelta() {
-    const set = [];
-    const remove = [];
-    const fonts = [];
-    const seen = new Set();
-    this.files.forEach((v, rel) => {
-      seen.add(rel);
-      if (v instanceof Y.Text) {
-        const text = v.toString();
-        if (this.sent.get(rel) !== text) {
-          set.push([rel, text]);
-          this.sent.set(rel, text);
-        }
-      } else if (v?.blob) {
-        const disk = storage.blobPath(this.id, v.blob);
-        if (this.sent.get(rel) !== 'blob:' + v.blob) {
-          set.push([rel, { disk }]);
-          this.sent.set(rel, 'blob:' + v.blob);
-        }
-        if (storage.isFontPath(rel)) fonts.push(disk);
-      }
-    });
-    for (const rel of [...this.sent.keys()]) {
-      if (!seen.has(rel)) {
-        remove.push(rel);
-        this.sent.delete(rel);
-      }
-    }
-    fonts.sort();
-    const fontsKey = fonts.join('\n');
-    const fontsChanged = fontsKey !== this.sentFonts;
-    this.sentFonts = fontsKey;
-    return { set, remove, fonts: fontsChanged ? fonts : undefined };
-  }
-
   get imageBase() {
     return `/api/projects/${this.id}/img/`;
+  }
+
+  /** Every entry point being compiled: the main file, plus files previewed on their own. */
+  get targets() {
+    return [this.primary, ...this.solo.values()];
+  }
+
+  /** The target behind a client's choice: a file previewed on its own, or the main file. */
+  targetFor(path) {
+    return path ? this.solo.get(path) || null : this.primary;
   }
 
   storeImages(images) {
@@ -489,116 +710,13 @@ export class Room {
     }
   }
 
-  /** Everything a newly connected client needs: last compile, outline, full preview. */
-  fullMessage() {
-    return { ...this.last, outline: this.outline ?? undefined, preview: this.fullPreview() };
-  }
-
-  /** The whole current preview, for clients that have nothing yet. */
-  fullPreview() {
-    if (!this.preview) return null;
-    return {
-      defs: this.preview.defs,
-      glyphs: Object.fromEntries(this.glyphs),
-      pages: this.preview.order.map((tid) => this.preview.pages.get(tid)),
-    };
-  }
-
-  /**
-   * Stores a new preview and returns what clients holding the previous one
-   * need: changed defs and only the pages they don't have (null if nothing changed).
-   */
-  applyPreview(next) {
-    this.storeImages(next.images);
-    const newGlyphs = {};
-    for (const [id, markup] of Object.entries(next.glyphs || {})) {
-      if (!this.glyphs.has(id)) this.glyphs.set(id, (newGlyphs[id] = markup));
-    }
-    const hasNewGlyphs = Object.keys(newGlyphs).length > 0;
-    const prev = this.preview;
-    // The engine only renders pages it hasn't rendered before; reuse the rest.
-    const pages = next.pages.map((p) => (p.svg !== undefined ? p : { ...p, svg: prev?.pages.get(p.tid)?.svg }));
-    this.preview = {
-      defs: next.defs,
-      defsHash: next.defsHash,
-      order: pages.map((p) => p.tid),
-      pages: new Map(pages.map((p) => [p.tid, p])),
-    };
-    const defsChanged = !prev || prev.defsHash !== next.defsHash;
-    const sameOrder = prev && prev.order.length === next.pages.length && prev.order.every((tid, i) => tid === next.pages[i].tid);
-    if (!defsChanged && sameOrder && !hasNewGlyphs) return null;
-    return {
-      defs: defsChanged ? next.defs : undefined,
-      glyphs: hasNewGlyphs ? newGlyphs : undefined,
-      pages: pages.map((p) => (prev?.pages.has(p.tid) ? { tid: p.tid, w: p.w, h: p.h } : p)),
-    };
-  }
-
-  request(extra = {}) {
-    return compiler.request({
-      type: 'compile',
-      project: this.id,
-      workspace: storage.workspaceDir(this.id),
-      main: this.mainFile,
-      imageBase: this.imageBase,
-      ...this.takeDelta(),
-      ...extra,
-    });
-  }
-
   scheduleCompile(delay = COMPILE_DELAY_MS) {
-    clearTimeout(this.compileTimer);
-    this.compileTimer = setTimeout(() => this.compile(), delay);
+    for (const target of this.targets) target.scheduleCompile(delay);
   }
 
-  async compile() {
-    if (this.destroyed) return;
-    if (this.compiling) {
-      this.compileAgain = true;
-      return;
-    }
-    this.compiling = true;
-    try {
-      let res = await this.request();
-      if (this.destroyed) return;
-      // If the compiler assumed we have pages we don't (e.g. after a restart), get them all.
-      if (res.preview?.pages.some((p) => p.svg === undefined && !this.preview?.pages.get(p.tid)?.svg)) {
-        res = await this.request({ full: true });
-        if (this.destroyed) return;
-      }
-      const msg = {
-        type: 'compile',
-        status: res.status,
-        diagnostics: res.diagnostics,
-        pages: res.pages ?? this.last?.pages ?? 0,
-        ms: res.ms,
-        at: Date.now(),
-      };
-      this.last = msg;
-      const out = { ...msg };
-      if (res.preview) {
-        const preview = this.applyPreview(res.preview);
-        if (preview) out.preview = preview;
-      }
-      // The heading list only goes out when it changed.
-      if (res.outline) {
-        const json = JSON.stringify(res.outline);
-        if (json !== this.outlineJson) {
-          this.outline = res.outline;
-          this.outlineJson = json;
-          out.outline = res.outline;
-        }
-      }
-      this.broadcastJSON(out);
-    } catch (e) {
-      console.error(`[room ${this.id}] compile failed:`, e);
-    } finally {
-      this.compiling = false;
-      if (this.compileAgain) {
-        this.compileAgain = false;
-        this.scheduleCompile(0);
-      }
-    }
+  /** A compile of the main file for something other than the preview (PDF, Word, dependencies). */
+  request(extra = {}) {
+    return this.primary.request(extra);
   }
 
   /**
@@ -652,16 +770,18 @@ export class Room {
     return { deleted: doomed };
   }
 
-  /** Source location for a click in the preview, or null if unsupported. */
-  async jump(page, x, y) {
-    if (!compiler.jump) return null;
-    return compiler.jump(this.id, page, x, y);
+  /** Source location for a click in the preview of `target`, or null if unsupported. */
+  async jump(page, x, y, target = null) {
+    const t = this.targetFor(target);
+    if (!compiler.jump || !t) return null;
+    return compiler.jump(t.key, page, x, y);
   }
 
-  /** Preview position of the text at a cursor, or null if unsupported. */
-  async cursor(path, offset) {
-    if (!compiler.cursor) return null;
-    return compiler.cursor(this.id, path, offset);
+  /** Where the text at a cursor sits in the preview of `target`, or null if unsupported. */
+  async cursor(path, offset, target = null) {
+    const t = this.targetFor(target);
+    if (!compiler.cursor || !t) return null;
+    return compiler.cursor(t.key, path, offset);
   }
 
   /**
