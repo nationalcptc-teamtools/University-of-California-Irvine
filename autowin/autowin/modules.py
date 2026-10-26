@@ -10,9 +10,9 @@ from typing import Literal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .schema import DB, Box, User
-from .nxcwrap import nxc, Cred, host_rest
+from .nxcwrap import nxc, Cred, host_rest, cmdline, render
 from .shell import run
-from .console import info, err, warn, plain, Progress
+from .console import info, err, warn, plain, command, colorize_nxc, Progress
 
 Kind = Literal['vuln', 'loot', 'info']
 
@@ -198,14 +198,15 @@ def sweep(db: DB, threads: int = 24) -> None:
 
     def work(task):
         box, spec, cred, key = task
-        return box, spec, key, nxc(spec.proto, box.ip, cred, module=spec.name)
+        cmd = render(cmdline(spec.proto, box.ip, cred, module=spec.name))
+        return box, spec, cred, key, cmd, nxc(spec.proto, box.ip, cred, module=spec.name)
 
     with ThreadPoolExecutor(max_workers=threads) as pool:
         futures = [pool.submit(work, t) for t in tasks]
         with Progress('module sweep', total=len(futures)) as bar:
             for future in as_completed(futures):
                 try:
-                    box, spec, key, output = future.result()
+                    box, spec, cred, key, cmd, output = future.result()
                 except Exception as e:
                     err(f'sweep: module run failed: {e}')
                     bar.update()
@@ -214,8 +215,12 @@ def sweep(db: DB, threads: int = 24) -> None:
                 if lines:
                     cve = f' {spec.cve}' if spec.cve else ''
                     info(f'{box.hostname} {spec.proto}/{spec.name} ({spec.title}{cve}):')
+                    command('  ' + cmd)                 # reproduce this result by hand
                     for ln in lines:
-                        plain('      ' + ln)
+                        plain('      ' + colorize_nxc(ln))
+                    if db.store:                        # keep the raw dump for review
+                        db.store.save_output(cred.context(),
+                                             f'sweep_{spec.name}_{box.hostname}', cmd, output)
                 if spec.kind == 'loot':
                     _harvest_creds(db, box, spec.name, output)
                 if db.store:

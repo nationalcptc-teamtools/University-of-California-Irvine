@@ -287,4 +287,3 @@ fi
 ok "done - start tmux, or run 'tmux source-file ~/.tmux.conf' in a live session"
 
 ok "Fixing termincal config!"
-echo -e "terminalOpacity=0\nwindowOpacity=0" >>~/.config/qterminal.org/qterminal.ini

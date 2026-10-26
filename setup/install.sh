@@ -1,4 +1,4 @@
-#!/bin/env bash
+#!/usr/bin/env bash
 #
 # Cyber@UCI CPTC attack-box setup. Run as root on a Kali box.
 #
@@ -40,12 +40,12 @@ run apt install -y pipx
 run apt install -y xclip
 run pipx ensurepath
 run pipx ensurepath --global
-run pipx install bloodyAD
-run pipx install uv
-run pipx install git+https://github.com/Pennyw0rth/NetExec
-run pipx install penelope-shell-handler
+run pipx install --global bloodyAD
+run pipx install --global uv
+run pipx install --global git+https://github.com/Pennyw0rth/NetExec
+run pipx install --global penelope-shell-handler
 # autowin: AD enumeration/discovery tool from this repo -> `autowin` on PATH
-run pipx install "$AUTOWIN_SRC"
+run pipx install --global "$AUTOWIN_SRC"
 run apt install -y git
 run apt install -y wget
 run apt install -y curl
@@ -70,7 +70,10 @@ run apt install -y python3-venv \
 
 # ligolo tun. Guarded so a re-run does not fail on an interface that already
 # exists.
-ip link show ligolo >/dev/null 2>&1 || run ip tuntap add user kali mode tun ligolo
+# own the ligolo tun by the invoking user (sudo) else the current user, not a
+# hardcoded "kali" that may not exist.
+TUN_USER="${SUDO_USER:-$(id -un)}"
+ip link show ligolo >/dev/null 2>&1 || run ip tuntap add user "$TUN_USER" mode tun ligolo
 run ip link set ligolo up
 
 if ((${#FAILED[@]})); then

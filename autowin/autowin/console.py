@@ -72,6 +72,32 @@ def banner(message: str) -> None:
     _emit(f'{Colors.LIGHT_BLUE}{bar}{Colors.RESET}')
 
 
+def command(cmd: str) -> None:
+    """Echo the exact external command behind a result, so an operator can
+    reproduce it by hand (e.g. re-run the nxc line that dumped a policy)."""
+    _emit(f'{Colors.FAINT}{Colors.CYAN}$ {cmd}{Colors.RESET}')
+
+
+# NetExec's own status coloring, reapplied to a line we captured (and stripped)
+# so the sweep reads the same as a live `nxc` run.
+_NXC_STATUS = (
+    ('[+]', Colors.GREEN),
+    ('[-]', Colors.RED),
+    ('[*]', Colors.BLUE),
+    ('[!]', Colors.YELLOW),
+)
+
+
+def colorize_nxc(line: str) -> str:
+    """Recolor a captured NetExec output line the way nxc prints it live."""
+    stripped = line.lstrip()
+    indent = line[:len(line) - len(stripped)]
+    for tok, col in _NXC_STATUS:
+        if stripped.startswith(tok):
+            return f'{indent}{col}{tok}{Colors.RESET}{stripped[len(tok):]}'
+    return line
+
+
 # ---- progress bar -----------------------------------------------------
 #
 # A dependency-free, thread-safe single-line progress bar that cooperates

@@ -16,9 +16,9 @@ from .console import good, info, Progress
 
 
 def check_cred(domain: str, user: str, secret: str, is_hash: bool,
-               target: str) -> tuple[bool, set[str]]:
+               target: str, kerberos: bool = False) -> tuple[bool, set[str]]:
     """Validate one credential against one target. Returns (valid, shell_kinds)."""
-    cred = Cred(user, secret, domain, is_hash=is_hash)
+    cred = Cred(user, secret, domain, is_hash=is_hash, kerberos=kerberos)
     shells: set[str] = set()
     smb = nxc('smb', target, cred, timeout=30)
     valid = login_ok(smb)
@@ -32,10 +32,28 @@ def check_cred(domain: str, user: str, secret: str, is_hash: bool,
     return valid, shells
 
 
-def verify_access(db: DB) -> None:
+def check_cred_hosts(domain: str, user: str, secret: str, is_hash: bool,
+                     hosts: list[tuple[str, str]],
+                     kerberos: bool = False) -> tuple[bool, dict[str, set[str]]]:
+    """Check a credential against several hosts (list of (label, ip)). Returns
+    (any_valid, {label: shell_kinds}) -- i.e. whether and where it gets a shell."""
+    any_valid = False
+    shells_by_host: dict[str, set[str]] = {}
+    for label, ip in hosts:
+        valid, shells = check_cred(domain, user, secret, is_hash, ip, kerberos=kerberos)
+        any_valid = any_valid or valid or bool(shells)
+        if shells:
+            shells_by_host[label] = shells
+    return any_valid, shells_by_host
+
+
+def verify_access(db: DB, users=None) -> None:
     """For every credentialed user, probe each host over SMB (validity + admin
-    shell) and WinRM (shell), recording the results and persisting cred_status."""
-    users = db.credentialed_users()
+    shell) and WinRM (shell), recording the results and persisting cred_status.
+
+    Pass `users` to verify only a specific subset (e.g. the sweep-only path
+    verifies just the selected credential, not the whole store)."""
+    users = users if users is not None else db.credentialed_users()
     total = sum(len(db.boxes_in(u.domain)) for u in users)
     with Progress('verifying creds', total=total) as bar:
         for user in users:

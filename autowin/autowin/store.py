@@ -25,7 +25,7 @@ def _slug(name: str) -> str:
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS credentials (
     domain TEXT, username TEXT, secret TEXT, is_hash INTEGER DEFAULT 0,
-    source TEXT, host TEXT, ts REAL,
+    source TEXT, host TEXT, ts REAL, kerberos INTEGER DEFAULT 0,
     UNIQUE(domain, username, secret, is_hash));
 CREATE TABLE IF NOT EXISTS users (
     domain TEXT, username TEXT, description TEXT, ts REAL,
@@ -73,7 +73,14 @@ class Store:
         self.db.isolation_level = None  # autocommit
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.executescript(_SCHEMA)
+        self._migrate()
         self._lock = threading.Lock()
+
+    def _migrate(self) -> None:
+        """Add columns that older stores predate (CREATE IF NOT EXISTS won't)."""
+        cols = [r[1] for r in self.db.execute('PRAGMA table_info(credentials)').fetchall()]
+        if 'kerberos' not in cols:
+            self.db.execute('ALTER TABLE credentials ADD COLUMN kerberos INTEGER DEFAULT 0')
 
     # ---- helpers -------------------------------------------------------
 
@@ -88,12 +95,69 @@ class Store:
             with open(path, 'a', encoding='utf-8') as f:
                 f.write(line.rstrip('\n') + '\n')
 
+    def save_output(self, context: str, name: str, cmd: str, output: str) -> Path:
+        """Tee a step's raw command output under output/<context>/<name>.txt,
+        with the exact command as a header, so a later run can read the result
+        back instead of re-running it. Namespaced by credential context so each
+        new set of credentials keeps its own copy."""
+        out_dir = self.dir / 'output' / _slug(context or 'anonymous')
+        with self._lock:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path = out_dir / f'{_slug(name)}.txt'
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(f'$ {cmd}\n\n{output}')
+        return path
+
     # ---- writers (return True when newly stored) -----------------------
 
-    def add_credential(self, domain, username, secret, is_hash=False, source='', host='') -> bool:
-        return self._insert(
-            'INSERT OR IGNORE INTO credentials VALUES (?,?,?,?,?,?,?)',
-            (domain, username, secret, int(is_hash), source, host, time.time()))
+    def add_credential(self, domain, username, secret, is_hash=False, source='', host='',
+                       kerberos=False) -> bool:
+        with self._lock:
+            cur = self.db.execute(
+                'INSERT OR IGNORE INTO credentials '
+                '(domain,username,secret,is_hash,source,host,ts,kerberos) '
+                'VALUES (?,?,?,?,?,?,?,?)',
+                (domain, username, secret, int(is_hash), source, host, time.time(),
+                 int(kerberos)))
+            added = cur.rowcount == 1
+            # marking an already-stored credential as Kerberos must still stick
+            if kerberos and not added:
+                self.db.execute(
+                    'UPDATE credentials SET kerberos=1 '
+                    'WHERE domain=? AND username=? AND secret=? AND is_hash=?',
+                    (domain, username, secret, int(is_hash)))
+            return added
+
+    def remove_credential(self, username, domain=None, secret=None, is_hash=None) -> int:
+        """Delete stored credential(s) for a user. Narrow with domain and/or a
+        specific secret (-p/-H); otherwise every credential for that user goes.
+        Returns the number of rows removed."""
+        conds = ['LOWER(username)=LOWER(?)']
+        params: list = [username]
+        if domain:
+            conds.append('LOWER(domain)=LOWER(?)')
+            params.append(domain)
+        if secret is not None:
+            conds.append('secret=?')
+            params.append(secret)
+        if is_hash is not None:
+            conds.append('is_hash=?')
+            params.append(int(is_hash))
+        with self._lock:
+            cur = self.db.execute(
+                'DELETE FROM credentials WHERE ' + ' AND '.join(conds), tuple(params))
+            return cur.rowcount
+
+    def remove_cred_status(self, username, domain=None) -> int:
+        conds = ['LOWER(username)=LOWER(?)']
+        params: list = [username]
+        if domain:
+            conds.append('LOWER(domain)=LOWER(?)')
+            params.append(domain)
+        with self._lock:
+            cur = self.db.execute(
+                'DELETE FROM cred_status WHERE ' + ' AND '.join(conds), tuple(params))
+            return cur.rowcount
 
     def add_user(self, domain, username, description=None) -> bool:
         is_new = self._insert(
@@ -158,6 +222,23 @@ class Store:
     def get_default_target(self) -> str | None:
         return self.get_setting('default_target')
 
+    def set_current_user(self, domain, username, kerberos=False) -> None:
+        """Pin the credential discover uses by default (config current-user)."""
+        self.set_setting('current_user', f'{domain}\\{username}')
+        self.set_setting('current_user_kerberos', '1' if kerberos else '0')
+
+    def get_current_user(self) -> dict | None:
+        val = self.get_setting('current_user')
+        if not val or '\\' not in val:
+            return None
+        domain, username = val.split('\\', 1)
+        return {'domain': domain, 'username': username,
+                'kerberos': self.get_setting('current_user_kerberos') == '1'}
+
+    def clear_current_user(self) -> None:
+        self.set_setting('current_user', '')
+        self.set_setting('current_user_kerberos', '0')
+
     def remove_host(self, ident) -> int:
         """Delete host(s) matching ident by hostname or ip. Returns row count."""
         with self._lock:
@@ -215,7 +296,7 @@ class Store:
     # ---- readers -------------------------------------------------------
 
     def list_credentials(self, domain=None) -> list[dict]:
-        sql = 'SELECT domain,username,secret,is_hash,source,host FROM credentials'
+        sql = 'SELECT domain,username,secret,is_hash,source,host,kerberos FROM credentials'
         args: tuple = ()
         if domain:
             sql += ' WHERE domain=?'
@@ -223,7 +304,8 @@ class Store:
         with self._lock:
             rows = self.db.execute(sql, args).fetchall()
         return [{'domain': r[0], 'username': r[1], 'secret': r[2],
-                 'is_hash': bool(r[3]), 'source': r[4], 'host': r[5]} for r in rows]
+                 'is_hash': bool(r[3]), 'source': r[4], 'host': r[5],
+                 'kerberos': bool(r[6])} for r in rows]
 
     def list_users(self, domain=None) -> list[dict]:
         sql = 'SELECT domain,username,description FROM users'

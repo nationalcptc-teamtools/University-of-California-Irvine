@@ -4,11 +4,13 @@ We deliberately drive the `nxc` binary rather than importing the library, so
 autowin-new stays robust across NetExec versions.
 """
 import re
+import shlex
 import socket
 from dataclasses import dataclass
 
 from .shell import run
 from .schema import User
+from .console import command as _command
 
 # PROTO  IP  PORT  HOSTNAME  <rest>
 HOST_LINE = re.compile(r'^(SMB|LDAP|WINRM|MSSQL|RDP|SSH|FTP|WMI)\s+(\S+)\s+(\d+)\s+(\S+)\s+(.*)$')
@@ -47,15 +49,28 @@ class Cred:
     def label(self) -> str:
         if not self.username:
             return 'anonymous'
-        return f'{self.username}:{self.secret}' if self.secret else f'{self.username}:'
+        tag = ' (kerberos)' if self.kerberos else ''
+        secret = self.secret or ('<ccache>' if self.kerberos else '')
+        return f'{self.username}:{secret}{tag}'
 
     def key(self) -> str:
         """Stable identity for resume bookkeeping (which context ran a step)."""
-        return (self.username or 'anon') + ('#h' if self.is_hash else '')
+        return (self.username or 'anon') + ('#h' if self.is_hash else '') + ('#k' if self.kerberos else '')
+
+    def context(self) -> str:
+        """Filesystem-friendly name for this credential's raw-output folder."""
+        base = self.username or 'anonymous'
+        return base + ('_hash' if self.is_hash else '') + ('_krb' if self.kerberos else '')
 
     def args(self) -> list[str]:
         out = ['-u', self.username]
-        out += ['-H', self.secret] if self.is_hash else ['-p', self.secret]
+        # a Kerberos login may carry no secret at all (it uses the ccache in
+        # KRB5CCNAME), so only pass -p/-H when we actually have one -- but keep
+        # the explicit empty `-p ''` that anonymous/guest/null binds rely on.
+        if self.secret:
+            out += ['-H', self.secret] if self.is_hash else ['-p', self.secret]
+        elif not self.kerberos:
+            out += ['-p', '']
         if self.domain:
             out += ['-d', self.domain]
         if self.kerberos:
@@ -63,9 +78,9 @@ class Cred:
         return out
 
 
-def nxc(proto: str, target: str, cred: Cred | None = None, module: str | None = None,
-        extra: list[str] | None = None, module_opts: dict[str, str] | None = None,
-        timeout: int = 90) -> str:
+def cmdline(proto: str, target: str, cred: Cred | None = None, module: str | None = None,
+            extra: list[str] | None = None, module_opts: dict[str, str] | None = None) -> list[str]:
+    """Build the exact `nxc` argv for a call (also used to show/reproduce it)."""
     cmd = ['nxc', proto, target]
     if cred is not None:
         cmd += cred.args()
@@ -74,7 +89,36 @@ def nxc(proto: str, target: str, cred: Cred | None = None, module: str | None = 
         for key, value in (module_opts or {}).items():
             cmd += ['-o', f'{key}={value}']
     cmd += extra or []
-    return run(*cmd, timeout=timeout)
+    return cmd
+
+
+def render(cmd: list[str]) -> str:
+    """A copy-pasteable shell string for an argv list."""
+    return ' '.join(shlex.quote(c) for c in cmd)
+
+
+def nxc(proto: str, target: str, cred: Cred | None = None, module: str | None = None,
+        extra: list[str] | None = None, module_opts: dict[str, str] | None = None,
+        timeout: int = 90, show: bool = False, save: tuple | None = None) -> str:
+    """Run an nxc call and return its (ANSI-stripped) output.
+
+    show=True   echoes the exact command first (so a result is reproducible).
+    save=(store, context, name) tees the raw output to a per-context loot file
+                so a future run can read it back instead of re-running.
+    """
+    cmd = cmdline(proto, target, cred, module, extra, module_opts)
+    rendered = render(cmd)
+    if show:
+        _command(rendered)
+    out = run(*cmd, timeout=timeout)
+    if save is not None:
+        store, context, name = save
+        if store is not None:
+            try:
+                store.save_output(context, name, rendered, out)
+            except OSError:
+                pass
+    return out
 
 
 # ---- parsing ----------------------------------------------------------

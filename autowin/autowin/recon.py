@@ -99,11 +99,13 @@ def enumerate_users(db: DB, cred: Cred) -> None:
                 bar.update()
                 continue
 
-            output = nxc('smb', box.ip, cred, extra=['--users'])
+            output = nxc('smb', box.ip, cred, extra=['--users'], show=True,
+                         save=(db.store, cred.context(), f'users_{box.hostname}'))
             for name, bad_pwd, desc in parse_users(output):
                 db.add_user(User(name=name, owner=box, bad_pwd_count=bad_pwd, description=desc))
 
-            output = nxc('smb', box.ip, cred, extra=['--rid-brute'])
+            output = nxc('smb', box.ip, cred, extra=['--rid-brute'], show=True,
+                         save=(db.store, cred.context(), f'rid-brute_{box.hostname}'))
             for name in parse_rid_brute(output):
                 db.add_user(User(name=name, owner=box))
             _mark(db, key)
@@ -121,7 +123,8 @@ def ldap_enumerate_users(db: DB, cred: Cred) -> None:
         if _skip(db, key):
             continue
 
-        output = nxc('ldap', domain.dc.ip, cred, extra=['--users'])
+        output = nxc('ldap', domain.dc.ip, cred, extra=['--users'], show=True,
+                     save=(db.store, cred.context(), f'ldap-users_{domain.name}'))
         for name, bad_pwd, desc in parse_users(output):
             db.add_user(User(name=name, owner=domain.dc, bad_pwd_count=bad_pwd, description=desc))
         _mark(db, key)
@@ -139,7 +142,8 @@ def enumerate_shares(db: DB, cred: Cred) -> None:
                 bar.update()
                 continue
 
-            output = nxc('smb', box.ip, cred, extra=['--shares'])
+            output = nxc('smb', box.ip, cred, extra=['--shares'], show=True,
+                         save=(db.store, cred.context(), f'shares_{box.hostname}'))
             for name, perms, remark in parse_shares(output):
                 db.add_share(Share(
                     name=name,
@@ -224,7 +228,8 @@ def enumerate_password_policy(db: DB, cred: Cred) -> None:
         if _skip(db, key):
             continue
 
-        policy = _parse_pass_pol(nxc('smb', domain.dc.ip, cred, extra=['--pass-pol']))
+        policy = _parse_pass_pol(nxc('smb', domain.dc.ip, cred, extra=['--pass-pol'], show=True,
+                                     save=(db.store, cred.context(), f'pass-pol_{domain.name}')))
         if policy:
             domain.password_policy = policy
             good(f'password policy recovered for {domain} ({len(policy)} setting(s))')
