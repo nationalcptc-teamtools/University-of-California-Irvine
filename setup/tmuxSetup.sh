@@ -286,4 +286,31 @@ else
 fi
 ok "done - start tmux, or run 'tmux source-file ~/.tmux.conf' in a live session"
 
-ok "Fixing termincal config!"
+ok "Fixing terminal config!"
+QTERMINAL_CONFIG="$(run_as bash -c 'printf %s "${XDG_CONFIG_HOME:-$HOME/.config}"')/qterminal.org/qterminal.ini"
+run_as mkdir -p "$(dirname "$QTERMINAL_CONFIG")"
+run_as touch "$QTERMINAL_CONFIG"
+run_as sed -i -E \
+  -e '/^(terminalOpacity|windowOpacity|TerminalTransparency)=/d' \
+  "$QTERMINAL_CONFIG"
+if run_as grep -q '^\[General\]$' "$QTERMINAL_CONFIG"; then
+  run_as sed -i '/^\[General\]$/a TerminalTransparency=0' "$QTERMINAL_CONFIG"
+else
+  run_as sed -i '1i [General]\nTerminalTransparency=0' "$QTERMINAL_CONFIG"
+fi
+
+if command -v qterminal >/dev/null 2>&1; then
+  GUI_ENV=()
+  for variable in DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR XDG_CONFIG_HOME; do
+    if [[ -n ${!variable:-} ]]; then
+      GUI_ENV+=("$variable=${!variable}")
+    fi
+  done
+  if run_as env "${GUI_ENV[@]}" qterminal >/dev/null 2>&1 & then
+    ok "opened a new QTerminal window with transparency disabled"
+  else
+    warn "could not open a new QTerminal window; start qterminal to apply the setting"
+  fi
+else
+  warn "qterminal is not installed; open a new terminal to apply the opacity settings"
+fi
